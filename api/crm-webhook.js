@@ -26,10 +26,14 @@ module.exports = (req, res) => {
       return res.status(401).json({ message: 'Unauthorized: Invalid token.' });
     }
 
-    // Token ist gültig, der 'decoded' Payload enthält die Daten
-    console.log('Decoded JWT Payload:', decoded);
+    // Überprüfe, ob die erwarteten Felder vorhanden sind
+    if (!decoded || !decoded.entityName || !decoded.recordId || !decoded.changeType) {
+      console.error('JWT Payload missing required fields:', decoded);
+      return res.status(400).json({ message: 'Bad Request: JWT Payload is missing required fields (entityName, recordId, changeType).', decoded });
+    }
 
     const { entityName, recordId, changeType } = decoded;
+    console.log('Decoded JWT Payload:', decoded);
     console.log(`Änderung in ${entityName} mit ID ${recordId} (${changeType})`);
 
     // Hier kommt deine Logik zur Weiterverarbeitung der Daten (z.B. an die Webflow API)
