@@ -56,7 +56,12 @@ JSON-Objekt mit Änderungsdetails:
 - **405 Method Not Allowed**: Bei Verwendung einer anderen HTTP-Methode  
 - **400 Bad Request**: Fehlende oder fehlerhafte Felder im JWT-Payload  
 
-## 3. Zukünftige Pläne  
+## 3. CRM Testskript
+Ein Beispielskript kann mit `npm run crm:test` ausgeführt werden. Es versucht,
+über das CRM-Endpunkt `m8_GetEventsV1` Daten abzurufen. Die benötigten
+Konfigurationswerte befinden sich in `.env.example`.
+
+## 4. Zukünftige Pläne
 
 - **CRM zu Webflow Sync**  
   Regelmäßiges oder manuelles Abrufen und Einspeisen von Daten (Events, Preise, Kategorien, Orte, Flughäfen) über CRM-Endpunkte (z. B. `m8_GetEventsV1`) ins Webflow CMS.  
@@ -67,6 +72,6 @@ JSON-Objekt mit Änderungsdetails:
 - **Webflow zu CRM**  
   Rückübermittlung von Daten aus Webflow an das CRM-System (z. B. Buchungen über `m8_SubmitSalesOrderV2`).  
 
-## 4. Fazit  
+## 5. Fazit  
 Die aktuelle Version bildet die Grundlage für eine umfassende Integration von Microsoft CRM und Webflow. Mit dem implementierten Webhook können reaktive Updates realisiert werden.  
 Zukünftige Schritte beinhalten bidirektionalen Datenaustausch und vollständige Automatisierung der Integration.
