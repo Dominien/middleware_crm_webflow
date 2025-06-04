@@ -1,4 +1,4 @@
-// crm-test.js
+// scripts/crm-test.js
 // Simple script to test CRM connectivity by calling m8_GetEventsV1
 
 require('dotenv').config();
