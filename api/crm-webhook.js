@@ -1,4 +1,4 @@
-// webhook.js
+// api/crm-webhook.js
 const jwt = require('jsonwebtoken');
 
 module.exports = (req, res) => {
@@ -7,7 +7,7 @@ module.exports = (req, res) => {
   }
 
   const authHeader = req.headers.authorization;
-  const secretKey = process.env.JWT_SECRET;
+  const secretKey = process.env.JWT_SECRET; // Wichtig: Secret Key aus Umgebungsvariable!
 
   if (!secretKey) {
     console.error('JWT_SECRET environment variable not set!');
@@ -26,23 +26,19 @@ module.exports = (req, res) => {
       return res.status(401).json({ message: 'Unauthorized: Invalid token.' });
     }
 
+    // Überprüfe, ob die erwarteten Felder vorhanden sind
     if (!decoded || !decoded.entityName || !decoded.recordId || !decoded.changeType) {
       console.error('JWT Payload missing required fields:', decoded);
-      return res.status(400).json({
-        message: 'Bad Request: JWT Payload is missing required fields (entityName, recordId, changeType).',
-        decoded,
-      });
+      return res.status(400).json({ message: 'Bad Request: JWT Payload is missing required fields (entityName, recordId, changeType).', decoded });
     }
 
     const { entityName, recordId, changeType } = decoded;
     console.log('Decoded JWT Payload:', decoded);
-    console.log(`\u00c4nderung in ${entityName} mit ID ${recordId} (${changeType})`);
+    console.log(`Änderung in ${entityName} mit ID ${recordId} (${changeType})`);
 
-    // Optional: Weiterverarbeitung der Daten, z.B. Aufruf der Webflow API
+    // Hier kommt deine Logik zur Weiterverarbeitung der Daten (z.B. an die Webflow API)
+    // ...
 
-    res.status(200).json({
-      message: 'Webhook received and processed.',
-      data: { entityName, recordId, changeType },
-    });
+    res.status(200).json({ message: 'Webhook received and processed.', data: { entityName, recordId, changeType } });
   });
 };
