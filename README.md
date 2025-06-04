@@ -1,13 +1,13 @@
 # Middleware für CRM-Webflow Integration  
 **Version:** 0.1 (Webhook Listener)
 
-## 1. Einführung  
-Diese Middleware verbindet Microsoft CRM und Webflow für Datensynchronisation und Echtzeit-Updates via Webhooks. Die aktuelle Version implementiert einen CRM-Webhook-Listener.
+## 1. Einführung
+Diese Middleware verbindet Microsoft CRM und Webflow für Datensynchronisation und Echtzeit-Updates via Webhooks. Die Codebasis wurde auf zwei JavaScript-Dateien reduziert: `webhook.js` für den Webhook-Handler und `crm-test.js` für einfache API-Tests.
 
 ## 2. CRM Webhook Listener
 
-### 2.1 Endpunkt  
-`[EURE_VERCEL_ENDPOINT_URL]/api/crm-webhook`  
+### 2.1 Endpunkt
+`[EURE_ENDPOINT_URL]/webhook`
 Akzeptiert `POST`-Requests vom CRM für Änderungsbenachrichtigungen.
 
 ### 2.2 Authentifizierung  
@@ -57,8 +57,8 @@ JSON-Objekt mit Änderungsdetails:
 - **400 Bad Request**: Fehlende oder fehlerhafte Felder im JWT-Payload  
 
 ## 3. CRM Testskript
-Ein Beispielskript kann mit `npm run crm:test` ausgeführt werden. Es versucht,
-über das CRM-Endpunkt `m8_GetEventsV1` Daten abzurufen. Die benötigten
+Ein kleines Testskript (`crm-test.js`) lässt sich mit `npm run crm:test` ausführen.
+Es ruft das CRM-Endpunkt `m8_GetEventsV1` auf. Die benötigten
 Konfigurationswerte befinden sich in `.env.example`.
 
 ## 4. Zukünftige Pläne

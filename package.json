@@ -4,7 +4,7 @@
   "main": "index.js",
   "scripts": {
     "test": "node tests/env.test.js",
-    "crm:test": "node scripts/test-crm.js"
+    "crm:test": "node crm-test.js"
   },
   "keywords": [],
   "author": "",
