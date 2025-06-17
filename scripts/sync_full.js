@@ -1,8 +1,8 @@
 /**
  * sync_full.js
  * This script performs a full, one-way synchronization from the Dynamics CRM
- * to a Webflow CMS. It uses a caching mechanism to prevent duplicate reference
- * item creation and improve performance.
+ * to a Webflow CMS. It syncs core event data and main reference items.
+ * NOTE: This version does NOT sync individual event products or prices to the CMS.
  */
 
 require('dotenv').config();
@@ -62,52 +62,44 @@ function slugify(text) {
 }
 
 /**
- * Finds a reference item in a local cache, or creates it in Webflow if it doesn't exist.
- * This function is the key to preventing duplicate slug errors.
- * @param {object} config - Configuration object.
- * @param {Map<string, string>} config.cache - The local cache Map (CRM ID -> Webflow ID).
- * @param {string} config.collectionId - The Webflow Collection ID for creation.
- * @param {string} config.crmIdFieldSlug - The slug of the field storing the CRM ID.
- * @param {string} config.crmId - The CRM ID of the item to find or create.
- * @param {string} config.name - The name of the item.
- * @param {object} config.additionalFields - Other fields for creation.
+ * Finds or creates a reference item, now also supporting updates.
  * @returns {Promise<string|null>} The Webflow Item ID.
  */
-async function getOrCreateReferenceItem({ cache, collectionId, crmIdFieldSlug, crmId, name, additionalFields = {} }) {
+async function getOrCreateOrUpdateReferenceItem({ cache, collectionId, crmIdFieldSlug, crmId, name, additionalFields = {} }) {
     if (!crmId) return null;
 
-    // 1. Check the local cache first! This is the most important step.
-    if (cache.has(crmId)) {
-        return cache.get(crmId);
-    }
-
-    // 2. If not in cache, create the item in Webflow.
-    console.log(`  Item '${name}' (CRM ID: ${crmId}) not in cache. Creating in Webflow...`);
-    const newItemData = {
-        isArchived: false,
-        isDraft: false,
-        fieldData: {
-            name: name,
-            slug: slugify(name),
-            [crmIdFieldSlug]: crmId,
-            ...additionalFields
-        }
+    const fieldData = {
+        name: name,
+        slug: slugify(name),
+        [crmIdFieldSlug]: crmId,
+        ...additionalFields
     };
 
-    const createdItem = await callWebflowApi('POST', `/collections/${collectionId}/items`, newItemData);
+    if (cache.has(crmId)) {
+        const webflowItemId = cache.get(crmId);
+        await callWebflowApi('PATCH', `/collections/${collectionId}/items/${webflowItemId}`, { fieldData });
+        return webflowItemId;
+    }
+
+    console.log(`  Creating new reference item: '${name}' (CRM ID: ${crmId})`);
+    const createdItem = await callWebflowApi('POST', `/collections/${collectionId}/items`, {
+        isArchived: false,
+        isDraft: false,
+        fieldData
+    });
     
-    // 3. Add the newly created item to the cache for subsequent loops.
     cache.set(crmId, createdItem.id);
     
     return createdItem.id;
 }
 
+
 // --- Main Synchronization Logic ---
 async function syncFull() {
     console.log('Starting full sync from CRM to Webflow...');
 
-    // 1. Fetch existing Webflow items and CRM events in parallel to build our caches.
     console.log('Fetching existing Webflow items and CRM events...');
+    // --- UPDATED: Removed PRODUCTS collection fetch ---
     const [existingLocations, existingCategories, existingAirports, crmEventsResponse] = await Promise.all([
         callWebflowApi('GET', `/collections/${COLLECTION_IDS.LOCATIONS}/items`),
         callWebflowApi('GET', `/collections/${COLLECTION_IDS.CATEGORIES}/items`),
@@ -115,65 +107,30 @@ async function syncFull() {
         getEvents()
     ]);
 
-    // 2. Create local caches (Maps) for quick lookups.
+    // --- UPDATED: Removed PRODUCTS cache ---
     const locationCache = new Map(existingLocations.items.map(item => [item.fieldData.eventlocationid, item.id]));
     const categoryCache = new Map(existingCategories.items.map(item => [item.fieldData['category-id'], item.id]));
     const airportCache = new Map(existingAirports.items.map(item => [item.fieldData.airportid, item.id]));
     console.log(`Caches built. Locations: ${locationCache.size}, Categories: ${categoryCache.size}, Airports: ${airportCache.size}`);
     
-    // 3. Get events from the CRM response.
-    if (!crmEventsResponse || !crmEventsResponse.value || crmEventsResponse.value.length === 0) {
+    if (!crmEventsResponse || !crmEventsResponse.value || !crmEventsResponse.value.length === 0) {
         console.log('No active events found in CRM. Sync complete.');
         return;
     }
     const crmEvents = crmEventsResponse.value;
     console.log(`Found ${crmEvents.length} active event(s) in CRM to process.`);
 
-    // 4. Find existing Webflow events to create a cache for them too.
     const existingWebflowEvents = await callWebflowApi('GET', `/collections/${COLLECTION_IDS.EVENTS}/items`);
     const eventCache = new Map(existingWebflowEvents.items.map(item => [item.fieldData.eventid, item.id]));
 
-    // 5. Process each event.
     for (const crmEvent of crmEvents) {
         console.log(`\nProcessing CRM Event: "${crmEvent.m8_name}" (ID: ${crmEvent.m8_eventid})`);
 
-        // Location
-        let locationWebflowId = null;
-        if (crmEvent.m8_eventlocation) {
-            locationWebflowId = await getOrCreateReferenceItem({
-                cache: locationCache,
-                collectionId: COLLECTION_IDS.LOCATIONS,
-                crmIdFieldSlug: 'eventlocationid',
-                crmId: crmEvent.m8_eventlocation.m8_eventlocationid,
-                name: crmEvent.m8_eventlocation.m8_name,
-                additionalFields: {
-                    address1city: crmEvent.m8_eventlocation.m8_address1city,
-                    address1country: crmEvent.m8_eventlocation.m8_address1country,
-                }
-            });
-        }
-        
-        // Categories
-        const categoryWebflowIds = await Promise.all(crmEvent.m8_eventcategories.map(category =>
-            getOrCreateReferenceItem({
-                cache: categoryCache,
-                collectionId: COLLECTION_IDS.CATEGORIES,
-                crmIdFieldSlug: 'category-id',
-                crmId: category.m8_eventcategoryid,
-                name: category.m8_name
-            })
-        ));
+        const locationWebflowId = crmEvent.m8_eventlocation ? await getOrCreateOrUpdateReferenceItem({ cache: locationCache, collectionId: COLLECTION_IDS.LOCATIONS, crmIdFieldSlug: 'eventlocationid', crmId: crmEvent.m8_eventlocation.m8_eventlocationid, name: crmEvent.m8_eventlocation.m8_name, additionalFields: { address1city: crmEvent.m8_eventlocation.m8_address1city, address1country: crmEvent.m8_eventlocation.m8_address1country } }) : null;
+        const categoryWebflowIds = await Promise.all((crmEvent.m8_eventcategories || []).map(cat => getOrCreateOrUpdateReferenceItem({ cache: categoryCache, collectionId: COLLECTION_IDS.CATEGORIES, crmIdFieldSlug: 'category-id', crmId: cat.m8_eventcategoryid, name: cat.m8_name })));
+        const airportWebflowIds = await Promise.all((crmEvent.m8_airports || []).map(air => getOrCreateOrUpdateReferenceItem({ cache: airportCache, collectionId: COLLECTION_IDS.AIRPORTS, crmIdFieldSlug: 'airportid', crmId: air.m8_airportid, name: air.m8_name })));
 
-        // Airports
-        const airportWebflowIds = await Promise.all(crmEvent.m8_airports.map(airport =>
-             getOrCreateReferenceItem({
-                cache: airportCache,
-                collectionId: COLLECTION_IDS.AIRPORTS,
-                crmIdFieldSlug: 'airportid',
-                crmId: airport.m8_airportid,
-                name: airport.m8_name
-            })
-        ));
+        // --- REMOVED: All logic for handling m8_pricelevelproducts has been taken out ---
 
         // Prepare main event data
         const eventFieldData = {
@@ -188,12 +145,12 @@ async function syncFull() {
             isflightincluded: crmEvent.m8_isflightincluded,
             iseventpublished: crmEvent.m8_iseventpublished,
             isaccommodationandcateringincluded: crmEvent.m8_isaccommodationandcateringincluded,
-            categorie: categoryWebflowIds.filter(Boolean), // Filter out any nulls
+            categorie: categoryWebflowIds.filter(Boolean),
             airport: airportWebflowIds.filter(Boolean),
-            location: locationWebflowId ? [locationWebflowId] : [] 
+            location: locationWebflowId ? [locationWebflowId] : []
+            // --- REMOVED: 'event-products' multi-reference field ---
         };
 
-        // Check event cache to decide whether to update (PATCH) or create (POST).
         const existingEventId = eventCache.get(crmEvent.m8_eventid);
 
         if (existingEventId) {
