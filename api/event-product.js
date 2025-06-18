@@ -5,18 +5,34 @@
  * proxy, preventing any secret keys from being exposed on the front end.
  */
 
-// Assuming you are using an Express.js server framework
 const express = require('express');
 const router = express.Router();
-
-// Import the function to get price levels from your crm.js module
-// The path assumes that crm.js is in a 'lib' directory one level up.
 const { getEventPriceLevel } = require('../lib/crm');
+
+// --- CORS Configuration Start ---
+// This block will ensure that only your Webflow site can access this API from a browser.
+
+// 1. Import the cors middleware
+const cors = require('cors');
+
+// 2. Define the security options for CORS
+const corsOptions = {
+  // Only allow requests from your specific Webflow domain
+  origin: 'https://k108---esc-european-speed-club.webflow.io',
+  optionsSuccessStatus: 200 // For legacy browser support
+};
+
+// 3. Apply the CORS middleware to the router
+// Every request to this router will first pass through this security check.
+router.use(cors(corsOptions));
+
+// --- CORS Configuration End ---
+
 
 /**
  * @route   GET /api/event-products/:eventId
  * @desc    Fetches all products and their live prices for a single event.
- * @access  Public
+ * @access  Public (but restricted by CORS)
  */
 router.get('/:eventId', async (req, res) => {
     try {
