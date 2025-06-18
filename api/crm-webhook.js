@@ -1,18 +1,13 @@
 // api/crm-webhook.js
-
-// --- NEW: Import Express and create a router ---
-const express = require('express');
-const router = express.Router();
-
 const jwt = require('jsonwebtoken');
 
-// --- NEW: Wrap your logic in a router.post() handler ---
-// We use .post() because your original code checked for the POST method.
-// The path is '/' because the filename 'crm-webhook' already defines the route path.
-router.post('/', (req, res) => {
-  // Your original code starts here, everything else is the same.
+module.exports = (req, res) => {
+  if (req.method !== 'POST') {
+    return res.status(405).send('Method Not Allowed');
+  }
+
   const authHeader = req.headers.authorization;
-  const secretKey = process.env.JWT_SECRET;
+  const secretKey = process.env.JWT_SECRET; // Wichtig: Secret Key aus Umgebungsvariable!
 
   if (!secretKey) {
     console.error('JWT_SECRET environment variable not set!');
@@ -31,6 +26,7 @@ router.post('/', (req, res) => {
       return res.status(401).json({ message: 'Unauthorized: Invalid token.' });
     }
 
+    // Überprüfe, ob die erwarteten Felder vorhanden sind
     if (!decoded || !decoded.entityName || !decoded.recordId || !decoded.changeType) {
       console.error('JWT Payload missing required fields:', decoded);
       return res.status(400).json({ message: 'Bad Request: JWT Payload is missing required fields (entityName, recordId, changeType).', decoded });
@@ -40,12 +36,9 @@ router.post('/', (req, res) => {
     console.log('Decoded JWT Payload:', decoded);
     console.log(`Änderung in ${entityName} mit ID ${recordId} (${changeType})`);
 
-    // Your future logic will go here
+    // Hier kommt deine Logik zur Weiterverarbeitung der Daten (z.B. an die Webflow API)
     // ...
 
     res.status(200).json({ message: 'Webhook received and processed.', data: { entityName, recordId, changeType } });
   });
-});
-
-// --- NEW: Export the router, not the function ---
-module.exports = router;
+};
