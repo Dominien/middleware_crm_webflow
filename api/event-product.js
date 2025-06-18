@@ -1,4 +1,4 @@
-// api/event-product.js  -- MINIMAL TEST CODE
+// api/event-product.js -- NEW TEST WITH QUERY PARAMETER
 
 const express = require('express');
 const router = express.Router();
@@ -11,11 +11,20 @@ const corsOptions = {
 };
 router.use(cors(corsOptions));
 
-// A very simple route handler
-router.get('/:eventId', (req, res) => {
-  const { eventId } = req.params;
-  console.log(`[TEST] Minimal endpoint hit for eventId: ${eventId}`);
-  res.status(200).json([{ productname: "Test successful" }]);
+// A very simple route handler that now uses req.query
+// The route path is now just '/'
+router.get('/', (req, res) => {
+  // Get the eventId from the query string instead of the path params
+  const { eventId } = req.query;
+
+  console.log(`[TEST] Minimal endpoint hit with query parameter eventId: ${eventId}`);
+
+  if (!eventId) {
+    return res.status(400).json({ message: "Query parameter 'eventId' is required." });
+  }
+
+  // Just send back a success message
+  res.status(200).json([{ productname: `Test for ${eventId} successful` }]);
 });
 
 module.exports = router;
