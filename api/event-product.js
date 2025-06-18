@@ -1,7 +1,10 @@
-// api/event-product.js
+// api/event-product.js -- FINAL VERSION
 
-// Import and configure CORS
-const cors = require('cors');
+// Import CORS middleware handler
+import cors from 'cors';
+
+// Import your CRM logic
+import { getEventPriceLevel } from '../lib/crm.js'; // Using ESM import
 
 // Initialize CORS middleware
 const corsHandler = cors({
@@ -9,17 +12,22 @@ const corsHandler = cors({
   optionsSuccessStatus: 200
 });
 
-// The main serverless function Vercel will run
-export default async function handler(req, res) {
-  // We use a helper to run the CORS middleware
-  await new Promise((resolve, reject) => {
-    corsHandler(req, res, (result) => {
+// Helper to run middleware in a native serverless function
+const runMiddleware = (req, res, fn) => {
+  return new Promise((resolve, reject) => {
+    fn(req, res, (result) => {
       if (result instanceof Error) {
         return reject(result);
       }
       return resolve(result);
     });
   });
+};
+
+// The main serverless function Vercel will run
+export default async function handler(req, res) {
+  // First, run the CORS middleware
+  await runMiddleware(req, res, corsHandler);
 
   // Ensure this only responds to GET requests
   if (req.method !== 'GET') {
@@ -27,15 +35,34 @@ export default async function handler(req, res) {
     return res.status(405).end(`Method ${req.method} Not Allowed`);
   }
 
-  // Get the eventId from the query string
-  const { eventId } = req.query;
+  // --- Your Original Logic Starts Here ---
+  try {
+    // Get the eventId from the query string
+    const { eventId } = req.query;
 
-  console.log(`[Vercel Function] Endpoint hit with query parameter eventId: ${eventId}`);
+    if (!eventId) {
+      return res.status(400).json({ msg: "Query parameter 'eventId' is required." });
+    }
 
-  if (!eventId) {
-    return res.status(400).json({ message: "Query parameter 'eventId' is required." });
+    console.log(`[API] Received request for event products for eventId: ${eventId}`);
+
+    // Call the CRM function to get the price level and products
+    const priceLevelData = await getEventPriceLevel(eventId);
+
+    // The CRM response nests the data. We need to safely extract it.
+    if (priceLevelData && priceLevelData.value && priceLevelData.value.length > 0) {
+      const products = priceLevelData.value[0].m8_pricelevelproducts || [];
+      console.log(`[API] Found ${products.length} products for eventId: ${eventId}. Sending to client.`);
+      return res.status(200).json(products);
+    } else {
+      // Handle cases where the event is found but has no products
+      console.log(`[API] No products found for eventId: ${eventId}.`);
+      return res.status(200).json([]);
+    }
+
+  } catch (error) {
+    console.error('[API Error] Failed to fetch event products from CRM:', error.message);
+    // Send a generic server error to the client
+    res.status(500).json({ msg: 'Server error while fetching product data.' });
   }
-
-  // Just send back a success message
-  res.status(200).json([{ productname: `Test for ${eventId} successful` }]);
 }
