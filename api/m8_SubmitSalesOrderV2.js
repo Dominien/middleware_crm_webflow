@@ -1,6 +1,6 @@
 // /api/m8_SubmitsalesOrderV2.js
 import cors from 'cors';
-import { submitsalesOrder } from '../lib/crm.js';
+import { submitSalesOrder } from '../lib/crm.js';
 
 const corsHandler = cors({
   origin: 'https://k108---esc-european-speed-club.webflow.io',
@@ -55,7 +55,7 @@ export default async function handler(req, res) {
     const finalPayloadForCrm = { salesOrder: salesOrderString };
 
     console.log('Submitting Sales Order to CRM with stringified payload …');
-    const crmResponse = await submitsalesOrder(finalPayloadForCrm);
+    const crmResponse = await submitSalesOrder(finalPayloadForCrm);
 
     console.log('CRM submission successful:', crmResponse);
     return res.status(200).json(crmResponse);
