@@ -1,4 +1,4 @@
-// /api/m8_SubmitsalesOrderV2.js
+// /api/m8_SubmitSalesOrderV2.js – robust gegen doppelte Verkapselung
 import cors from 'cors';
 import { submitSalesOrder } from '../lib/crm.js';
 
@@ -22,52 +22,58 @@ export default async function handler(req, res) {
   }
 
   try {
-    /** ----------------------------------------------------------------
-     *  STEP 1 – Rohdaten übernehmen
-     *  Erwartet wird eines der beiden Formate:
-     *    a) { salesOrder: { … } }      ← vom Frontend geschickt
-     *    b) { …direkt das salesOrder-Objekt… }  ← Fallback
-     * ----------------------------------------------------------------*/
+    // ------------------------------------------------------------------
+    // 1) Body prüfen
+    // ------------------------------------------------------------------
     const body = req.body;
-
     if (!body || Object.keys(body).length === 0) {
-      return res
-        .status(400)
-        .json({ error: { message: 'Missing salesOrder data in request body.' } });
+      return res.status(400).json({ error: { message: 'Missing salesOrder data in request body.' } });
     }
 
-    // -----------------------------------------------------------------
-    // STEP 2 – Nur den eigentlichen Sales-Order-Teil herausziehen
-    // -----------------------------------------------------------------
-    const salesOrderContent = body.hasOwnProperty('salesOrder') ? body.salesOrder : body;
+    // ------------------------------------------------------------------
+    // 2) Erstes Unwrapping – salesOrder vs. legacy salesorder
+    // ------------------------------------------------------------------
+    let content = body.salesOrder ?? body.salesorder ?? body;
 
-    // -----------------------------------------------------------------
-    // STEP 3 – Falls noch nicht passiert: in einen JSON-String verwandeln
-    // -----------------------------------------------------------------
-    const salesOrderString =
-      typeof salesOrderContent === 'string'
-        ? salesOrderContent               // schon escapet
-        : JSON.stringify(salesOrderContent); // jetzt escapen
+    // ------------------------------------------------------------------
+    // 3) Falls noch ein "salesorder"‑Wrapper **im String** steckt → rausparsen
+    //    Beispiel:   { salesOrder: "{\"salesorder\":\"{...}\"}" }
+    // ------------------------------------------------------------------
+    if (typeof content === 'string') {
+      // Versuch: String zu JSON parsen
+      try {
+        const parsed = JSON.parse(content);
+        if (parsed && typeof parsed === 'object' && parsed.salesorder) {
+          // innen liegt nochmal ein String – das eigentliche Objekt
+          content = parsed.salesorder;
+        } else {
+          content = parsed; // schon richtig
+        }
+      } catch (_) {
+        // content bleibt String (bereits escaped)
+      }
+    }
 
-    // -----------------------------------------------------------------
-    // STEP 4 – Payload fürs CRM bauen
-    // -----------------------------------------------------------------
-    const finalPayloadForCrm = { salesOrder: salesOrderString };
+    // ------------------------------------------------------------------
+    // 4) Sicherstellen, dass wir jetzt einen String haben
+    // ------------------------------------------------------------------
+    const salesOrderString = typeof content === 'string' ? content : JSON.stringify(content);
 
-    console.log('Submitting Sales Order to CRM with stringified payload …');
-    const crmResponse = await submitSalesOrder(finalPayloadForCrm);
+    // ------------------------------------------------------------------
+    // 5) Payload für Dynamics
+    // ------------------------------------------------------------------
+    const finalPayload = { salesOrder: salesOrderString };
 
-    console.log('CRM submission successful:', crmResponse);
+    console.log('Submitting Sales Order to CRM …');
+    const crmResponse = await submitSalesOrder(finalPayload);
     return res.status(200).json(crmResponse);
-  } catch (error) {
-    console.error('Error in m8_SubmitsalesOrderV2 handler:', error);
-
-    // Versuche, ein strukturiertes Fehlerobjekt des CRM durchzureichen
+  } catch (err) {
+    console.error('Handler error:', err);
     try {
-      const errorJson = JSON.parse(error.message.split(' failed: ')[1]);
-      return res.status(500).json(errorJson);
+      const parsed = JSON.parse(err.message.split(' failed: ')[1]);
+      return res.status(500).json(parsed);
     } catch {
-      return res.status(500).json({ error: { message: 'An internal server error occurred.' } });
+      return res.status(500).json({ error: { message: 'Internal server error.' } });
     }
   }
 }
