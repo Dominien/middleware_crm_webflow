@@ -1,6 +1,6 @@
-// /api/m8_SubmitSalesOrderV2.js
+// /api/m8_SubmitsalesOrderV2.js
 import cors from 'cors';
-import { submitSalesOrder } from '../lib/crm.js';
+import { submitsalesOrder } from '../lib/crm.js';
 
 const corsHandler = cors({
   origin: 'https://k108---esc-european-speed-club.webflow.io',
@@ -25,42 +25,42 @@ export default async function handler(req, res) {
     /** ----------------------------------------------------------------
      *  STEP 1 – Rohdaten übernehmen
      *  Erwartet wird eines der beiden Formate:
-     *    a) { salesorder: { … } }      ← vom Frontend geschickt
-     *    b) { …direkt das Salesorder-Objekt… }  ← Fallback
+     *    a) { salesOrder: { … } }      ← vom Frontend geschickt
+     *    b) { …direkt das salesOrder-Objekt… }  ← Fallback
      * ----------------------------------------------------------------*/
     const body = req.body;
 
     if (!body || Object.keys(body).length === 0) {
       return res
         .status(400)
-        .json({ error: { message: 'Missing salesorder data in request body.' } });
+        .json({ error: { message: 'Missing salesOrder data in request body.' } });
     }
 
     // -----------------------------------------------------------------
     // STEP 2 – Nur den eigentlichen Sales-Order-Teil herausziehen
     // -----------------------------------------------------------------
-    const salesorderContent = body.hasOwnProperty('salesorder') ? body.salesorder : body;
+    const salesOrderContent = body.hasOwnProperty('salesOrder') ? body.salesOrder : body;
 
     // -----------------------------------------------------------------
     // STEP 3 – Falls noch nicht passiert: in einen JSON-String verwandeln
     // -----------------------------------------------------------------
-    const salesorderString =
-      typeof salesorderContent === 'string'
-        ? salesorderContent               // schon escapet
-        : JSON.stringify(salesorderContent); // jetzt escapen
+    const salesOrderString =
+      typeof salesOrderContent === 'string'
+        ? salesOrderContent               // schon escapet
+        : JSON.stringify(salesOrderContent); // jetzt escapen
 
     // -----------------------------------------------------------------
     // STEP 4 – Payload fürs CRM bauen
     // -----------------------------------------------------------------
-    const finalPayloadForCrm = { salesorder: salesorderString };
+    const finalPayloadForCrm = { salesOrder: salesOrderString };
 
     console.log('Submitting Sales Order to CRM with stringified payload …');
-    const crmResponse = await submitSalesOrder(finalPayloadForCrm);
+    const crmResponse = await submitsalesOrder(finalPayloadForCrm);
 
     console.log('CRM submission successful:', crmResponse);
     return res.status(200).json(crmResponse);
   } catch (error) {
-    console.error('Error in m8_SubmitSalesOrderV2 handler:', error);
+    console.error('Error in m8_SubmitsalesOrderV2 handler:', error);
 
     // Versuche, ein strukturiertes Fehlerobjekt des CRM durchzureichen
     try {
