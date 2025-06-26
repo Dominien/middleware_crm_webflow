@@ -27,30 +27,35 @@ export default async function handler(req, res) {
     // ------------------------------------------------------------------
     const body = req.body;
     if (!body || Object.keys(body).length === 0) {
+      console.error('Request body is missing or empty.');
       return res.status(400).json({ error: { message: 'Missing salesOrder data in request body.' } });
     }
+
+    console.log('Request body received:', JSON.stringify(body, null, 2));
 
     // ------------------------------------------------------------------
     // 2) Erstes Unwrapping – salesOrder vs. legacy salesorder
     // ------------------------------------------------------------------
     let content = body.salesOrder ?? body.salesorder ?? body;
+    console.log('Initial content extracted:', JSON.stringify(content, null, 2));
 
     // ------------------------------------------------------------------
     // 3) Falls noch ein "salesorder"‑Wrapper **im String** steckt → rausparsen
     //    Beispiel:   { salesOrder: "{\"salesorder\":\"{...}\"}" }
     // ------------------------------------------------------------------
     if (typeof content === 'string') {
-      // Versuch: String zu JSON parsen
+      console.log('Content is a string, attempting to parse it.');
       try {
         const parsed = JSON.parse(content);
         if (parsed && typeof parsed === 'object' && parsed.salesorder) {
-          // innen liegt nochmal ein String – das eigentliche Objekt
-          content = parsed.salesorder;
+          content = parsed.salesorder; // inner string – the actual object
+          console.log('Parsed salesorder from string:', JSON.stringify(content, null, 2));
         } else {
-          content = parsed; // schon richtig
+          content = parsed; // already in the correct format
+          console.log('Parsed valid object:', JSON.stringify(content, null, 2));
         }
-      } catch (_) {
-        // content bleibt String (bereits escaped)
+      } catch (err) {
+        console.error('Error parsing salesorder string:', err);
       }
     }
 
@@ -58,21 +63,30 @@ export default async function handler(req, res) {
     // 4) Sicherstellen, dass wir jetzt einen String haben
     // ------------------------------------------------------------------
     const salesOrderString = typeof content === 'string' ? content : JSON.stringify(content);
+    console.log('Final salesOrder string:', salesOrderString);
 
     // ------------------------------------------------------------------
     // 5) Payload für Dynamics
     // ------------------------------------------------------------------
     const finalPayload = { salesOrder: salesOrderString };
+    console.log('Prepared payload for CRM:', JSON.stringify(finalPayload, null, 2));
 
+    // ------------------------------------------------------------------
+    // Submit the sales order
+    // ------------------------------------------------------------------
     console.log('Submitting Sales Order to CRM …');
     const crmResponse = await submitSalesOrder(finalPayload);
+    console.log('CRM Response:', JSON.stringify(crmResponse, null, 2));
+
     return res.status(200).json(crmResponse);
   } catch (err) {
     console.error('Handler error:', err);
     try {
       const parsed = JSON.parse(err.message.split(' failed: ')[1]);
+      console.error('Error response from CRM:', JSON.stringify(parsed, null, 2));
       return res.status(500).json(parsed);
     } catch {
+      console.error('Error while parsing CRM error response.');
       return res.status(500).json({ error: { message: 'Internal server error.' } });
     }
   }
