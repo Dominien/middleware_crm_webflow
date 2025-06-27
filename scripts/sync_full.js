@@ -1,8 +1,9 @@
 /**
- * sync_full.js  – v2 (27 Jun 2025)
+ * sync_full.js  – v2.1 (27 Jun 2025)
  * One-way, full sync from Dynamics CRM → Webflow CMS
  * - Still *not* syncing price-level products (handled by middleware at runtime)
  * - Adds new Airport + Event fields introduced on 27 Jun 2025
+ * - NEW: Automatically publishes every created/updated item so it’s visible on the live site
  */
 
 require('dotenv').config();
@@ -42,6 +43,20 @@ async function callWebflowApi(method, endpoint, body = null) {
   return res.status === 204 ? null : res.json();
 }
 
+/**
+ * Publish the given CMS item so it appears on the live site.
+ * Webflow keeps newly‑created / updated items in a *staged* state until
+ * they’re explicitly published. This helper ensures they become visible.
+ */
+async function publishItem(collectionId, itemId) {
+  // Webflow accepts an array so we wrap the single ID
+  await callWebflowApi(
+    'POST',
+    `/collections/${collectionId}/items/publish`,
+    { itemIds: [itemId] },
+  );
+}
+
 const slugify = txt =>
   (txt || '')
     .toString()
@@ -55,6 +70,7 @@ const slugify = txt =>
 /**
  * Create, update or fetch a reference item.
  * Uses a cache (Map<crmId, webflowItemId>) to minimise API calls.
+ * Newly‑created or updated items are published immediately.
  */
 async function upsertReferenceItem({
   cache,
@@ -80,6 +96,7 @@ async function upsertReferenceItem({
       `/collections/${collectionId}/items/${webflowId}`,
       { fieldData },
     );
+    await publishItem(collectionId, webflowId);
     return webflowId;
   }
 
@@ -90,6 +107,7 @@ async function upsertReferenceItem({
     fieldData,
   });
   cache.set(crmId, id);
+  await publishItem(collectionId, id);
   return id;
 }
 
@@ -198,14 +216,16 @@ async function syncFull() {
       await callWebflowApi('PATCH', `/collections/${COLLECTION_IDS.EVENTS}/items/${webflowId}`, {
         fieldData,
       });
-      console.log('   ↻ updated in Webflow');
+      await publishItem(COLLECTION_IDS.EVENTS, webflowId);
+      console.log('   ↻ updated & published');
     } else {
-      await callWebflowApi('POST', `/collections/${COLLECTION_IDS.EVENTS}/items`, {
+      const { id: newId } = await callWebflowApi('POST', `/collections/${COLLECTION_IDS.EVENTS}/items`, {
         isArchived: false,
         isDraft: false,
         fieldData,
       });
-      console.log('   ✓ created in Webflow');
+      await publishItem(COLLECTION_IDS.EVENTS, newId);
+      console.log('   ✓ created & published');
     }
   }
 
