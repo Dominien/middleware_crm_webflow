@@ -1,9 +1,10 @@
 /**
- * sync_full.js  – v2.1 (27 Jun 2025)
+ * sync_full.js  – v2.2 (27 Jun 2025)
  * One-way, full sync from Dynamics CRM → Webflow CMS
  * - Still *not* syncing price-level products (handled by middleware at runtime)
  * - Adds new Airport + Event fields introduced on 27 Jun 2025
- * - NEW: Automatically publishes every created/updated item so it’s visible on the live site
+ * - Automatically publishes every created/updated item so it’s visible on the live site
+ * - NEW: also fills `isfullybookedboleantext` (PlainText) with "true" / "false"
  */
 
 require('dotenv').config();
@@ -204,6 +205,7 @@ async function syncFull() {
       isaccommodationandcateringincluded: ev.m8_isaccommodationandcateringincluded,
       // NEW fields added 27 Jun 2025
       isfullybooked: ev.m8_isfullybooked,
+      isfullybookedboleantext: ev.m8_isfullybooked ? 'true' : 'false',
       availablevehicles: ev.m8_availablevehicles,
       // references
       categorie: categoryIds.filter(Boolean),
