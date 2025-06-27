@@ -1,44 +1,43 @@
-// api/crm-webhook.js
+// api/crm-webhook.js  (Serverless Function for Vercel)
+require('dotenv').config();
 const jwt = require('jsonwebtoken');
+const syncFull = require('../scripts/sync_full');     // ⬅️  adjust the path if needed
 
-module.exports = (req, res) => {
-  if (req.method !== 'POST') {
-    return res.status(405).send('Method Not Allowed');
+module.exports = async (req, res) => {
+  if (req.method !== 'POST') return res.status(405).send('Method Not Allowed');
+
+  const auth = req.headers.authorization;
+  const secret = process.env.JWT_SECRET;
+
+  if (!secret) {
+    console.error('JWT_SECRET missing in env');
+    return res.status(500).send('Server config error');
   }
+  if (!auth?.startsWith('Bearer ')) return res.status(401).send('Unauthorized');
 
-  const authHeader = req.headers.authorization;
-  const secretKey = process.env.JWT_SECRET; // Wichtig: Secret Key aus Umgebungsvariable!
+  try {
+    const token = auth.split(' ')[1];
+    const payload = jwt.verify(token, secret);
 
-  if (!secretKey) {
-    console.error('JWT_SECRET environment variable not set!');
-    return res.status(500).send('Server configuration error.');
-  }
-
-  if (!authHeader || !authHeader.startsWith('Bearer ')) {
-    return res.status(401).json({ message: 'Unauthorized: No Bearer token.' });
-  }
-
-  const token = authHeader.split(' ')[1];
-
-  jwt.verify(token, secretKey, (err, decoded) => {
-    if (err) {
-      console.error('JWT Verification Error:', err);
-      return res.status(401).json({ message: 'Unauthorized: Invalid token.' });
+    // (Optional) quick sanity-check of the payload
+    if (!payload?.entityName) {
+      return res.status(400).json({ message: 'Bad payload', payload });
     }
 
-    // Überprüfe, ob die erwarteten Felder vorhanden sind
-    if (!decoded || !decoded.entityName || !decoded.recordId || !decoded.changeType) {
-      console.error('JWT Payload missing required fields:', decoded);
-      return res.status(400).json({ message: 'Bad Request: JWT Payload is missing required fields (entityName, recordId, changeType).', decoded });
-    }
+    console.log('✅ CRM webhook accepted:', payload);
 
-    const { entityName, recordId, changeType } = decoded;
-    console.log('Decoded JWT Payload:', decoded);
-    console.log(`Änderung in ${entityName} mit ID ${recordId} (${changeType})`);
+    /*
+     * Kick off the long-running sync **without** blocking the webhook:
+     *  – fire-and-forget → let the function return immediately (202 Accepted)
+     *  – any errors are only logged to Vercel
+     */
+    syncFull()
+      .then(() => console.log('✔︎ Full CRM → Webflow sync finished'))
+      .catch(err => console.error('✘ Sync failed:', err));
 
-    // Hier kommt deine Logik zur Weiterverarbeitung der Daten (z.B. an die Webflow API)
-    // ...
-
-    res.status(200).json({ message: 'Webhook received and processed.', data: { entityName, recordId, changeType } });
-  });
+    return res.status(202).json({ message: 'Sync triggered' });
+  } catch (err) {
+    console.error('JWT error:', err);
+    return res.status(401).send('Unauthorized');
+  }
 };
