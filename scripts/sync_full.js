@@ -234,7 +234,14 @@ async function syncFull() {
   console.log('\n✅  Full sync complete.');
 }
 
+// *** HIER IST DIE ÄNDERUNG ***
+// Export the function so it can be `require`'d by other files like the webhook.
+module.exports = syncFull;
+
+
 // ---------------------------------------------------------------------------
+// This part allows the script to be run directly from the command line
+// using `node scripts/sync_full.js`
 if (require.main === module) {
   syncFull().catch(err => {
     console.error('\n❌  Sync failed:', err);
