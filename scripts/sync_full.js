@@ -1,10 +1,11 @@
 /**
- * sync_full.js  – v2.2 (27 Jun 2025)
+ * sync_full.js  – v2.3 (29 Jun 2025)
  * One-way, full sync from Dynamics CRM → Webflow CMS
+ * - Adds timeouts to Webflow API calls to prevent hangs.
+ * - Adds detailed logging to pinpoint slow or failing data fetches.
  * - Still *not* syncing price-level products (handled by middleware at runtime)
- * - Adds new Airport + Event fields introduced on 27 Jun 2025
  * - Automatically publishes every created/updated item so it’s visible on the live site
- * - NEW: also fills `isfullybookedboleantext` (PlainText) with "true" / "false"
+ * - Fills `isfullybookedboleantext` (PlainText) with "true" / "false"
  */
 
 require('dotenv').config();
@@ -28,7 +29,11 @@ if (!WEBFLOW_API_TOKEN || Object.values(COLLECTION_IDS).some(v => !v)) {
 // --- Helpers ---------------------------------------------------------------
 const webflowApiBase = 'https://api.webflow.com/v2';
 
+// MODIFIED: Added a 20-second timeout to all Webflow API calls.
 async function callWebflowApi(method, endpoint, body = null) {
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), 20000); // 20-second timeout
+
   const options = {
     method,
     headers: {
@@ -36,12 +41,24 @@ async function callWebflowApi(method, endpoint, body = null) {
       authorization: `Bearer ${WEBFLOW_API_TOKEN}`,
       'content-type': 'application/json',
     },
+    signal: controller.signal, // Pass the abort signal to fetch
   };
   if (body) options.body = JSON.stringify(body);
 
-  const res = await fetch(`${webflowApiBase}${endpoint}`, options);
-  if (!res.ok) throw new Error(`Webflow API ${res.status} → ${await res.text()}`);
-  return res.status === 204 ? null : res.json();
+  try {
+    const res = await fetch(`${webflowApiBase}${endpoint}`, options);
+    if (!res.ok) throw new Error(`Webflow API ${res.status} → ${await res.text()}`);
+    return res.status === 204 ? null : res.json();
+  } catch (error) {
+    if (error.name === 'AbortError') {
+      throw new Error(`Webflow API call to ${endpoint} timed out after 20 seconds.`);
+    }
+    // Re-throw other errors
+    throw error;
+  } finally {
+    // Clear the timeout timer in any case
+    clearTimeout(timeoutId);
+  }
 }
 
 /**
@@ -116,125 +133,135 @@ async function upsertReferenceItem({
 async function syncFull() {
   console.log('🔄  Full CRM → Webflow sync started…');
 
-  // Fetch Webflow reference collections + CRM events
-  const [locationsRes, categoriesRes, airportsRes, crmEventsRes] = await Promise.all([
-    callWebflowApi('GET', `/collections/${COLLECTION_IDS.LOCATIONS}/items`),
-    callWebflowApi('GET', `/collections/${COLLECTION_IDS.CATEGORIES}/items`),
-    callWebflowApi('GET', `/collections/${COLLECTION_IDS.AIRPORTS}/items`),
-    getEvents(),
-  ]);
+  try {
+    // MODIFIED: Fetch initial data sequentially with detailed logging to find hangs.
+    console.log('   -> Fetching Webflow Locations...');
+    const locationsRes = await callWebflowApi('GET', `/collections/${COLLECTION_IDS.LOCATIONS}/items`);
+    console.log('   ✓ Locations fetched.');
 
-  const locationCache = new Map(locationsRes.items.map(i => [i.fieldData.eventlocationid, i.id]));
-  const categoryCache = new Map(categoriesRes.items.map(i => [i.fieldData['category-id'], i.id]));
-  const airportCache  = new Map(airportsRes.items .map(i => [i.fieldData.airportid, i.id]));
+    console.log('   -> Fetching Webflow Categories...');
+    const categoriesRes = await callWebflowApi('GET', `/collections/${COLLECTION_IDS.CATEGORIES}/items`);
+    console.log('   ✓ Categories fetched.');
 
-  const crmEvents = crmEventsRes?.value ?? [];
-  if (!crmEvents.length) {
-    console.log('No events returned from CRM – nothing to sync.');
-    return;
-  }
+    console.log('   -> Fetching Webflow Airports...');
+    const airportsRes = await callWebflowApi('GET', `/collections/${COLLECTION_IDS.AIRPORTS}/items`);
+    console.log('   ✓ Airports fetched.');
 
-  // Pull current Event items once
-  const webflowEvents = await callWebflowApi('GET', `/collections/${COLLECTION_IDS.EVENTS}/items`);
-  const eventCache = new Map(webflowEvents.items.map(i => [i.fieldData.eventid, i.id]));
+    console.log('   -> Fetching CRM Events (from getEvents)...');
+    const crmEventsRes = await getEvents(); // This might still hang if the CRM API is slow and has no timeout
+    console.log('   ✓ CRM Events fetched.');
 
-  console.log(`• ${crmEvents.length} CRM events to process`);
-  for (const ev of crmEvents) {
-    console.log(`\n→ ${ev.m8_name} (${ev.m8_eventid})`);
 
-    /* --------- 1. Upsert Location / Category / Airport references ---------- */
-    const locationId = ev.m8_eventlocation
-      ? await upsertReferenceItem({
-          cache: locationCache,
-          collectionId: COLLECTION_IDS.LOCATIONS,
-          crmIdFieldSlug: 'eventlocationid',
-          crmId: ev.m8_eventlocation.m8_eventlocationid,
-          name: ev.m8_eventlocation.m8_name,
-          additionalFields: {
-            address1city:    ev.m8_eventlocation.m8_address1city,
-            address1country: ev.m8_eventlocation.m8_address1country,
-          },
-        })
-      : null;
+    const locationCache = new Map(locationsRes.items.map(i => [i.fieldData.eventlocationid, i.id]));
+    const categoryCache = new Map(categoriesRes.items.map(i => [i.fieldData['category-id'], i.id]));
+    const airportCache  = new Map(airportsRes.items .map(i => [i.fieldData.airportid, i.id]));
 
-    const categoryIds = await Promise.all(
-      (ev.m8_eventcategories || []).map(cat =>
-        upsertReferenceItem({
-          cache: categoryCache,
-          collectionId: COLLECTION_IDS.CATEGORIES,
-          crmIdFieldSlug: 'category-id',
-          crmId: cat.m8_eventcategoryid,
-          name: cat.m8_name,
-        }),
-      ),
-    );
-
-    const airportIds = await Promise.all(
-      (ev.m8_airports || []).map(air =>
-        upsertReferenceItem({
-          cache: airportCache,
-          collectionId: COLLECTION_IDS.AIRPORTS,
-          crmIdFieldSlug: 'airportid',
-          crmId: air.m8_airportid,
-          name: air.m8_name,
-          additionalFields: {                 // NEW — fill extra airport fields
-            iataairport:        air.m8_iataairport,
-            iataairportcode:    air.m8_iataairportcode,
-            note:               air.m8_note,
-            address1city:       air.m8_address1city,
-            address1country:    air.m8_address1country,
-          },
-        }),
-      ),
-    );
-
-    /* ---------------------- 2. Upsert main Event item ---------------------- */
-    const fieldData = {
-      // core
-      name: ev.m8_name,
-      slug: slugify(ev.m8_name),
-      eventid: ev.m8_eventid,
-      startdate: ev.m8_startdate,
-      enddate: ev.m8_enddate,
-      startingamount: ev.m8_startingamount,
-      drivingdays: ev.m8_drivingdays,
-      // flags
-      eventbookingstatuscode: ev.m8_eventbookingstatuscode,
-      isflightincluded: ev.m8_isflightincluded,
-      iseventpublished: ev.m8_iseventpublished,
-      isaccommodationandcateringincluded: ev.m8_isaccommodationandcateringincluded,
-      // NEW fields added 27 Jun 2025
-      isfullybooked: ev.m8_isfullybooked,
-      isfullybookedboleantext: ev.m8_isfullybooked ? 'true' : 'false',
-      availablevehicles: ev.m8_availablevehicles,
-      // references
-      categorie: categoryIds.filter(Boolean),
-      airport:   airportIds.filter(Boolean),
-      location:  locationId ? [locationId] : [],
-    };
-
-    if (eventCache.has(ev.m8_eventid)) {
-      const webflowId = eventCache.get(ev.m8_eventid);
-      await callWebflowApi('PATCH', `/collections/${COLLECTION_IDS.EVENTS}/items/${webflowId}`, {
-        fieldData,
-      });
-      await publishItem(COLLECTION_IDS.EVENTS, webflowId);
-      console.log('   ↻ updated & published');
-    } else {
-      const { id: newId } = await callWebflowApi('POST', `/collections/${COLLECTION_IDS.EVENTS}/items`, {
-        isArchived: false,
-        isDraft: false,
-        fieldData,
-      });
-      await publishItem(COLLECTION_IDS.EVENTS, newId);
-      console.log('   ✓ created & published');
+    const crmEvents = crmEventsRes?.value ?? [];
+    if (!crmEvents.length) {
+      console.log('No events returned from CRM – nothing to sync.');
+      return;
     }
-  }
 
-  console.log('\n✅  Full sync complete.');
+    // Pull current Event items once
+    const webflowEvents = await callWebflowApi('GET', `/collections/${COLLECTION_IDS.EVENTS}/items`);
+    const eventCache = new Map(webflowEvents.items.map(i => [i.fieldData.eventid, i.id]));
+
+    console.log(`• ${crmEvents.length} CRM events to process`);
+    for (const ev of crmEvents) {
+      console.log(`\n→ ${ev.m8_name} (${ev.m8_eventid})`);
+
+      /* --------- 1. Upsert Location / Category / Airport references ---------- */
+      const locationId = ev.m8_eventlocation
+        ? await upsertReferenceItem({
+            cache: locationCache,
+            collectionId: COLLECTION_IDS.LOCATIONS,
+            crmIdFieldSlug: 'eventlocationid',
+            crmId: ev.m8_eventlocation.m8_eventlocationid,
+            name: ev.m8_eventlocation.m8_name,
+            additionalFields: {
+              address1city:    ev.m8_eventlocation.m8_address1city,
+              address1country: ev.m8_eventlocation.m8_address1country,
+            },
+          })
+        : null;
+
+      const categoryIds = await Promise.all(
+        (ev.m8_eventcategories || []).map(cat =>
+          upsertReferenceItem({
+            cache: categoryCache,
+            collectionId: COLLECTION_IDS.CATEGORIES,
+            crmIdFieldSlug: 'category-id',
+            crmId: cat.m8_eventcategoryid,
+            name: cat.m8_name,
+          }),
+        ),
+      );
+
+      const airportIds = await Promise.all(
+        (ev.m8_airports || []).map(air =>
+          upsertReferenceItem({
+            cache: airportCache,
+            collectionId: COLLECTION_IDS.AIRPORTS,
+            crmIdFieldSlug: 'airportid',
+            crmId: air.m8_airportid,
+            name: air.m8_name,
+            additionalFields: {
+              iataairport:        air.m8_iataairport,
+              iataairportcode:    air.m8_iataairportcode,
+              note:               air.m8_note,
+              address1city:       air.m8_address1city,
+              address1country:    air.m8_address1country,
+            },
+          }),
+        ),
+      );
+
+      /* ---------------------- 2. Upsert main Event item ---------------------- */
+      const fieldData = {
+        name: ev.m8_name,
+        slug: slugify(ev.m8_name),
+        eventid: ev.m8_eventid,
+        startdate: ev.m8_startdate,
+        enddate: ev.m8_enddate,
+        startingamount: ev.m8_startingamount,
+        drivingdays: ev.m8_drivingdays,
+        eventbookingstatuscode: ev.m8_eventbookingstatuscode,
+        isflightincluded: ev.m8_isflightincluded,
+        iseventpublished: ev.m8_iseventpublished,
+        isaccommodationandcateringincluded: ev.m8_isaccommodationandcateringincluded,
+        isfullybooked: ev.m8_isfullybooked,
+        isfullybookedboleantext: ev.m8_isfullybooked ? 'true' : 'false',
+        availablevehicles: ev.m8_availablevehicles,
+        categorie: categoryIds.filter(Boolean),
+        airport:   airportIds.filter(Boolean),
+        location:  locationId ? [locationId] : [],
+      };
+
+      if (eventCache.has(ev.m8_eventid)) {
+        const webflowId = eventCache.get(ev.m8_eventid);
+        await callWebflowApi('PATCH', `/collections/${COLLECTION_IDS.EVENTS}/items/${webflowId}`, {
+          fieldData,
+        });
+        await publishItem(COLLECTION_IDS.EVENTS, webflowId);
+        console.log('   ↻ updated & published');
+      } else {
+        const { id: newId } = await callWebflowApi('POST', `/collections/${COLLECTION_IDS.EVENTS}/items`, {
+          isArchived: false,
+          isDraft: false,
+          fieldData,
+        });
+        await publishItem(COLLECTION_IDS.EVENTS, newId);
+        console.log('   ✓ created & published');
+      }
+    }
+    console.log('\n✅  Full sync complete.');
+
+  } catch (error) {
+    // Catch any error during the sync and log it clearly.
+    console.error('\n❌ A critical error occurred during the sync process:', error);
+  }
 }
 
-// *** HIER IST DIE ÄNDERUNG ***
 // Export the function so it can be `require`'d by other files like the webhook.
 module.exports = syncFull;
 
@@ -245,6 +272,6 @@ module.exports = syncFull;
 if (require.main === module) {
   syncFull().catch(err => {
     console.error('\n❌  Sync failed:', err);
-    process.exit(1);
+    // process.exit(1) is commented out as it's not ideal for serverless environments
   });
 }
