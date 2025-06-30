@@ -1,67 +1,65 @@
 /**
- * sync_full.js  – v2.9 (30 Jun 2025)
+ * sync_full.js  – v3.0 (30 Jun 2025)
  * One-way, full sync from Dynamics CRM → Webflow CMS
- * - FINAL DEBUGGING: Added granular logging inside callWebflowApi to pinpoint the exact line of failure.
- * - BUGFIX: Corrected a typo in the environment variable check (WEBFLOW_COLlection_ID_CATEGORIES).
- * - Re-instated a longer timeout as a safeguard.
+ * - CRITICAL FIX: Replaced `node-fetch` with `axios` to resolve low-level network compatibility issues in the Vercel environment.
+ * - This version should be stable and complete the sync process.
  */
 
 require('dotenv').config();
 const { getEvents } = require('../lib/crm');
-const fetch = require('node-fetch');
+// Switched from node-fetch to axios
+const axios = require('axios');
 
 // --- Helpers ---------------------------------------------------------------
 const webflowApiBase = 'https://api.webflow.com/v2';
 
-// MODIFIED FOR FINAL DEBUGGING: Granular logging and timeout re-instated.
+// RE-WRITTEN WITH AXIOS: This is a more robust HTTP client.
 async function callWebflowApi(method, endpoint, body = null) {
-  console.log(`      -> Preparing to call: ${method} ${endpoint}`);
   const WEBFLOW_API_TOKEN = process.env.WEBFLOW_API_TOKEN;
+  const fullUrl = `${webflowApiBase}${endpoint}`;
+  
+  // Create a new AbortController instance for each request
   const controller = new AbortController();
-  const timeoutId = setTimeout(() => controller.abort(), 45000); // 45-second timeout
+  const timeout = 45000; // 45 seconds
 
   const options = {
     method,
+    url: fullUrl,
     headers: {
-      accept: 'application/json',
-      authorization: `Bearer ${WEBFLOW_API_TOKEN}`,
-      'content-type': 'application/json',
+      'Accept': 'application/json',
+      'Authorization': `Bearer ${WEBFLOW_API_TOKEN}`,
+      'Content-Type': 'application/json',
     },
-    signal: controller.signal,
+    signal: controller.signal, // Connect the abort signal
+    timeout, // Axios has a built-in timeout property
   };
-  if (body) options.body = JSON.stringify(body);
+
+  if (body) {
+    options.data = body;
+  }
 
   try {
-    console.log(`      -> Sending fetch request to ${endpoint}...`);
-    const res = await fetch(`${webflowApiBase}${endpoint}`, options);
-    console.log(`      -> Received response from ${endpoint} with status: ${res.status}`);
-
-    if (!res.ok) {
-      const errorText = await res.text();
-      console.error(`      -> Response not OK. Body: ${errorText}`);
-      throw new Error(`Webflow API ${res.status} → ${errorText}`);
-    }
-    
-    if (res.status === 204) {
-        console.log(`      -> Endpoint ${endpoint} returned 204 No Content.`);
-        return null;
-    }
-
-    console.log(`      -> Parsing JSON response from ${endpoint}...`);
-    const jsonResponse = await res.json();
-    console.log(`      -> JSON parsed successfully for ${endpoint}.`);
-    return jsonResponse;
-
+    console.log(`      -> Sending [${method}] request to ${fullUrl} using axios...`);
+    const response = await axios(options);
+    console.log(`      -> Received response from ${fullUrl} with status: ${response.status}`);
+    return response.data; // axios automatically handles JSON parsing and returns data on success
   } catch (error) {
-     if (error.name === 'AbortError') {
-        const errorMessage = `Webflow API call to ${endpoint} timed out after 45 seconds.`;
-        console.error(errorMessage);
-        throw new Error(errorMessage);
-     }
-    console.error(`      -> CRITICAL ERROR during Webflow API call to endpoint: ${endpoint}`, error);
+    if (axios.isCancel(error)) {
+        console.error(`Request to ${fullUrl} was canceled or timed out.`);
+    } else if (error.response) {
+      // The request was made and the server responded with a status code
+      // that falls out of the range of 2xx
+      console.error(`      -> Webflow API Error Status: ${error.response.status}`);
+      console.error(`      -> Webflow API Error Data:`, error.response.data);
+    } else if (error.request) {
+      // The request was made but no response was received
+      console.error(`      -> No response received from Webflow API for request:`, error.request);
+    } else {
+      // Something happened in setting up the request that triggered an Error
+      console.error('      -> Axios request setup error:', error.message);
+    }
+    // Re-throw the error to be caught by the main try/catch block
     throw error;
-  } finally {
-      clearTimeout(timeoutId);
   }
 }
 
@@ -152,7 +150,6 @@ async function syncFull() {
       WEBFLOW_API_TOKEN: process.env.WEBFLOW_API_TOKEN,
       WEBFLOW_COLLECTION_ID_EVENTS: process.env.WEBFLOW_COLLECTION_ID_EVENTS,
       WEBFLOW_COLLECTION_ID_LOCATIONS: process.env.WEBFLOW_COLLECTION_ID_LOCATIONS,
-      // BUGFIX: Corrected typo from 'WEBFLOW_COLlection_ID_CATEGORIES'
       WEBFLOW_COLLECTION_ID_CATEGORIES: process.env.WEBFLOW_COLLECTION_ID_CATEGORIES,
       WEBFLOW_COLLECTION_ID_AIRPORTS: process.env.WEBFLOW_COLLECTION_ID_AIRPORTS,
       CRM_TENANT_ID: process.env.CRM_TENANT_ID,
@@ -284,7 +281,9 @@ async function syncFull() {
     console.log('\n✅  Full sync complete.');
 
   } catch (error) {
-    console.error('\n❌ A critical error occurred during the sync process:', error);
+    console.error('\n❌ A critical error occurred during the sync process.');
+    // We don't log the full error object here to avoid leaking sensitive details in logs.
+    // The specific error was already logged in the `callWebflowApi` catch block.
   }
 }
 
@@ -292,6 +291,7 @@ module.exports = syncFull;
 
 if (require.main === module) {
   syncFull().catch(err => {
-    console.error('\n❌  Sync failed:', err);
+    // The specific error is logged inside the function's catch block
+    console.error('\n❌  Sync script failed to run.');
   });
 }
