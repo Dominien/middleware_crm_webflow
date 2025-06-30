@@ -1,9 +1,9 @@
 /**
- * sync_full.js  – v2.3 (29 Jun 2025)
+ * sync_full.js  – v2.4 (30 Jun 2025)
  * One-way, full sync from Dynamics CRM → Webflow CMS
+ * - IMPROVED: Robust check for environment variables that logs a clear error message.
  * - Adds timeouts to Webflow API calls to prevent hangs.
  * - Adds detailed logging to pinpoint slow or failing data fetches.
- * - Still *not* syncing price-level products (handled by middleware at runtime)
  * - Automatically publishes every created/updated item so it’s visible on the live site
  * - Fills `isfullybookedboleantext` (PlainText) with "true" / "false"
  */
@@ -12,25 +12,12 @@ require('dotenv').config();
 const { getEvents } = require('../lib/crm');
 const fetch = require('node-fetch');
 
-// --- Configuration ---------------------------------------------------------
-const WEBFLOW_API_TOKEN = process.env.WEBFLOW_API_TOKEN;
-const COLLECTION_IDS = {
-  EVENTS:     process.env.WEBFLOW_COLLECTION_ID_EVENTS,
-  LOCATIONS:  process.env.WEBFLOW_COLLECTION_ID_LOCATIONS,
-  CATEGORIES: process.env.WEBFLOW_COLLECTION_ID_CATEGORIES,
-  AIRPORTS:   process.env.WEBFLOW_COLLECTION_ID_AIRPORTS,
-};
-
-if (!WEBFLOW_API_TOKEN || Object.values(COLLECTION_IDS).some(v => !v)) {
-  console.error('Missing ENV vars: WEBFLOW_API_TOKEN or one of the collection IDs.');
-  process.exit(1);
-}
-
 // --- Helpers ---------------------------------------------------------------
 const webflowApiBase = 'https://api.webflow.com/v2';
 
-// MODIFIED: Added a 20-second timeout to all Webflow API calls.
 async function callWebflowApi(method, endpoint, body = null) {
+  // This function now relies on the WEBFLOW_API_TOKEN being checked in syncFull()
+  const WEBFLOW_API_TOKEN = process.env.WEBFLOW_API_TOKEN;
   const controller = new AbortController();
   const timeoutId = setTimeout(() => controller.abort(), 20000); // 20-second timeout
 
@@ -41,7 +28,7 @@ async function callWebflowApi(method, endpoint, body = null) {
       authorization: `Bearer ${WEBFLOW_API_TOKEN}`,
       'content-type': 'application/json',
     },
-    signal: controller.signal, // Pass the abort signal to fetch
+    signal: controller.signal,
   };
   if (body) options.body = JSON.stringify(body);
 
@@ -53,21 +40,13 @@ async function callWebflowApi(method, endpoint, body = null) {
     if (error.name === 'AbortError') {
       throw new Error(`Webflow API call to ${endpoint} timed out after 20 seconds.`);
     }
-    // Re-throw other errors
     throw error;
   } finally {
-    // Clear the timeout timer in any case
     clearTimeout(timeoutId);
   }
 }
 
-/**
- * Publish the given CMS item so it appears on the live site.
- * Webflow keeps newly‑created / updated items in a *staged* state until
- * they’re explicitly published. This helper ensures they become visible.
- */
 async function publishItem(collectionId, itemId) {
-  // Webflow accepts an array so we wrap the single ID
   await callWebflowApi(
     'POST',
     `/collections/${collectionId}/items/publish`,
@@ -85,11 +64,6 @@ const slugify = txt =>
     .replace(/--+/g, '-')
     .replace(/^-+|-+$/g, '');
 
-/**
- * Create, update or fetch a reference item.
- * Uses a cache (Map<crmId, webflowItemId>) to minimise API calls.
- * Newly‑created or updated items are published immediately.
- */
 async function upsertReferenceItem({
   cache,
   collectionId,
@@ -134,27 +108,53 @@ async function syncFull() {
   console.log('🔄  Full CRM → Webflow sync started…');
 
   try {
-    // MODIFIED: Fetch initial data sequentially with detailed logging to find hangs.
+    // --- NEW: Robust check for all required environment variables ---
+    const requiredEnvVars = {
+      WEBFLOW_API_TOKEN: process.env.WEBFLOW_API_TOKEN,
+      WEBFLOW_COLLECTION_ID_EVENTS: process.env.WEBFLOW_COLLECTION_ID_EVENTS,
+      WEBFLOW_COLLECTION_ID_LOCATIONS: process.env.WEBFLOW_COLLECTION_ID_LOCATIONS,
+      WEBFLOW_COLLECTION_ID_CATEGORIES: process.env.WEBFLOW_COLLECTION_ID_CATEGORIES,
+      WEBFLOW_COLLECTION_ID_AIRPORTS: process.env.WEBFLOW_COLLECTION_ID_AIRPORTS,
+    };
+
+    const missingVars = Object.keys(requiredEnvVars).filter(key => !requiredEnvVars[key]);
+
+    if (missingVars.length > 0) {
+      // This will be caught by the catch block and logged correctly by Vercel.
+      throw new Error(`Missing required environment variables: ${missingVars.join(', ')}`);
+    }
+    console.log('   ✓ All environment variables are present.');
+    // --- End of new check ---
+
+
+    // We can now safely use the collection IDs
+    const COLLECTION_IDS = {
+      EVENTS: requiredEnvVars.WEBFLOW_COLLECTION_ID_EVENTS,
+      LOCATIONS: requiredEnvVars.WEBFLOW_COLLECTION_ID_LOCATIONS,
+      CATEGORIES: requiredEnvVars.WEBFLOW_COLLECTION_ID_CATEGORIES,
+      AIRPORTS: requiredEnvVars.WEBFLOW_COLLECTION_ID_AIRPORTS,
+    };
+
     console.log('   -> Fetching Webflow Locations...');
     const locationsRes = await callWebflowApi('GET', `/collections/${COLLECTION_IDS.LOCATIONS}/items`);
-    console.log('   ✓ Locations fetched.');
+    console.log(`   ✓ Locations fetched: ${locationsRes.items.length} items.`);
 
     console.log('   -> Fetching Webflow Categories...');
     const categoriesRes = await callWebflowApi('GET', `/collections/${COLLECTION_IDS.CATEGORIES}/items`);
-    console.log('   ✓ Categories fetched.');
+    console.log(`   ✓ Categories fetched: ${categoriesRes.items.length} items.`);
 
     console.log('   -> Fetching Webflow Airports...');
     const airportsRes = await callWebflowApi('GET', `/collections/${COLLECTION_IDS.AIRPORTS}/items`);
-    console.log('   ✓ Airports fetched.');
+    console.log(`   ✓ Airports fetched: ${airportsRes.items.length} items.`);
 
     console.log('   -> Fetching CRM Events (from getEvents)...');
-    const crmEventsRes = await getEvents(); // This might still hang if the CRM API is slow and has no timeout
+    const crmEventsRes = await getEvents();
     console.log('   ✓ CRM Events fetched.');
 
 
     const locationCache = new Map(locationsRes.items.map(i => [i.fieldData.eventlocationid, i.id]));
     const categoryCache = new Map(categoriesRes.items.map(i => [i.fieldData['category-id'], i.id]));
-    const airportCache  = new Map(airportsRes.items .map(i => [i.fieldData.airportid, i.id]));
+    const airportCache  = new Map(airportsRes.items.map(i => [i.fieldData.airportid, i.id]));
 
     const crmEvents = crmEventsRes?.value ?? [];
     if (!crmEvents.length) {
@@ -272,6 +272,5 @@ module.exports = syncFull;
 if (require.main === module) {
   syncFull().catch(err => {
     console.error('\n❌  Sync failed:', err);
-    // process.exit(1) is commented out as it's not ideal for serverless environments
   });
 }
