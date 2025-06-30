@@ -1,9 +1,9 @@
 /**
- * sync_full.js  – v2.8 (30 Jun 2025)
+ * sync_full.js  – v2.9 (30 Jun 2025)
  * One-way, full sync from Dynamics CRM → Webflow CMS
- * - DEBUGGING: Removed AbortController/timeout from callWebflowApi to test for environment compatibility issues.
- * - BUGFIX: Correctly filled in placeholder calls to upsertReferenceItem and fixed a bad COLLECTION_ID reference.
- * - Switched to sequential data fetching to isolate the exact point of failure.
+ * - FINAL DEBUGGING: Added granular logging inside callWebflowApi to pinpoint the exact line of failure.
+ * - BUGFIX: Corrected a typo in the environment variable check (WEBFLOW_COLlection_ID_CATEGORIES).
+ * - Re-instated a longer timeout as a safeguard.
  */
 
 require('dotenv').config();
@@ -13,9 +13,13 @@ const fetch = require('node-fetch');
 // --- Helpers ---------------------------------------------------------------
 const webflowApiBase = 'https://api.webflow.com/v2';
 
-// MODIFIED FOR DEBUGGING: Removed timeout and AbortController
+// MODIFIED FOR FINAL DEBUGGING: Granular logging and timeout re-instated.
 async function callWebflowApi(method, endpoint, body = null) {
+  console.log(`      -> Preparing to call: ${method} ${endpoint}`);
   const WEBFLOW_API_TOKEN = process.env.WEBFLOW_API_TOKEN;
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), 45000); // 45-second timeout
+
   const options = {
     method,
     headers: {
@@ -23,22 +27,41 @@ async function callWebflowApi(method, endpoint, body = null) {
       authorization: `Bearer ${WEBFLOW_API_TOKEN}`,
       'content-type': 'application/json',
     },
+    signal: controller.signal,
   };
   if (body) options.body = JSON.stringify(body);
 
   try {
+    console.log(`      -> Sending fetch request to ${endpoint}...`);
     const res = await fetch(`${webflowApiBase}${endpoint}`, options);
+    console.log(`      -> Received response from ${endpoint} with status: ${res.status}`);
+
     if (!res.ok) {
-      // Try to get text for better error logging
       const errorText = await res.text();
+      console.error(`      -> Response not OK. Body: ${errorText}`);
       throw new Error(`Webflow API ${res.status} → ${errorText}`);
     }
-    // Handle cases where the response is empty (e.g., 204 No Content)
-    return res.status === 204 ? null : res.json();
+    
+    if (res.status === 204) {
+        console.log(`      -> Endpoint ${endpoint} returned 204 No Content.`);
+        return null;
+    }
+
+    console.log(`      -> Parsing JSON response from ${endpoint}...`);
+    const jsonResponse = await res.json();
+    console.log(`      -> JSON parsed successfully for ${endpoint}.`);
+    return jsonResponse;
+
   } catch (error) {
-     // Log the specific endpoint that failed
-    console.error(`Error during Webflow API call to endpoint: ${endpoint}`);
-    throw error; // Re-throw the error to be caught by the main try/catch block
+     if (error.name === 'AbortError') {
+        const errorMessage = `Webflow API call to ${endpoint} timed out after 45 seconds.`;
+        console.error(errorMessage);
+        throw new Error(errorMessage);
+     }
+    console.error(`      -> CRITICAL ERROR during Webflow API call to endpoint: ${endpoint}`, error);
+    throw error;
+  } finally {
+      clearTimeout(timeoutId);
   }
 }
 
@@ -57,7 +80,6 @@ async function fetchAllWebflowItemsPaginated(collectionId) {
             offset += response.items.length;
         }
         
-        // Use pagination object for total count, which is more reliable
         hasMore = response && response.pagination && (offset < response.pagination.total);
     }
     return allItems;
@@ -130,7 +152,8 @@ async function syncFull() {
       WEBFLOW_API_TOKEN: process.env.WEBFLOW_API_TOKEN,
       WEBFLOW_COLLECTION_ID_EVENTS: process.env.WEBFLOW_COLLECTION_ID_EVENTS,
       WEBFLOW_COLLECTION_ID_LOCATIONS: process.env.WEBFLOW_COLLECTION_ID_LOCATIONS,
-      WEBFLOW_COLLECTION_ID_CATEGORIES: process.env.WEBFLOW_COLlection_ID_CATEGORIES,
+      // BUGFIX: Corrected typo from 'WEBFLOW_COLlection_ID_CATEGORIES'
+      WEBFLOW_COLLECTION_ID_CATEGORIES: process.env.WEBFLOW_COLLECTION_ID_CATEGORIES,
       WEBFLOW_COLLECTION_ID_AIRPORTS: process.env.WEBFLOW_COLLECTION_ID_AIRPORTS,
       CRM_TENANT_ID: process.env.CRM_TENANT_ID,
       CRM_CLIENT_ID: process.env.CRM_CLIENT_ID,
@@ -192,7 +215,6 @@ async function syncFull() {
     for (const ev of crmEvents) {
       console.log(`\n→ Processing Event: ${ev.m8_name} (${ev.m8_eventid})`);
       
-      // BUGFIX: Correctly call upsertReferenceItem with full parameters
       const locationId = ev.m8_eventlocation ? await upsertReferenceItem({
         cache: locationCache,
         collectionId: COLLECTION_IDS.LOCATIONS,
@@ -250,12 +272,10 @@ async function syncFull() {
 
       if (eventCache.has(ev.m8_eventid)) {
         const webflowId = eventCache.get(ev.m8_eventid);
-        // BUGFIX: Use the correct collection ID
         await callWebflowApi('PATCH', `/collections/${COLLECTION_IDS.EVENTS}/items/${webflowId}`, { fieldData });
         await publishItem(COLLECTION_IDS.EVENTS, webflowId);
         console.log('   ↻ updated & published');
       } else {
-        // BUGFIX: Use the correct collection ID
         const { id: newId } = await callWebflowApi('POST', `/collections/${COLLECTION_IDS.EVENTS}/items`, { isArchived: false, isDraft: false, fieldData });
         await publishItem(COLLECTION_IDS.EVENTS, newId);
         console.log('   ✓ created & published');
