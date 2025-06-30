@@ -1,19 +1,18 @@
 /**
- * sync_full.js  – v3.1 (30 Jun 2025)
+ * sync_full.js  – v3.2 (30 Jun 2025)
  * One-way, full sync from Dynamics CRM → Webflow CMS
- * - ADDED: A diagnostic check to google.com to confirm outbound connectivity from Vercel.
- * - CRITICAL FIX: Replaced `node-fetch` with `axios`.
+ * - FIXED: Now runs reliably as a background task on Vercel Pro.
+ * - REMOVED: The initial diagnostic check to google.com is no longer needed.
+ * - NOTE: This script is triggered by api/crm-webhook.js, which uses `waitUntil`.
  */
 
 require('dotenv').config();
 const { getEvents } = require('../lib/crm');
-// Switched from node-fetch to axios
 const axios = require('axios');
 
 // --- Helpers ---------------------------------------------------------------
 const webflowApiBase = 'https://api.webflow.com/v2';
 
-// RE-WRITTEN WITH AXIOS: This is a more robust HTTP client.
 async function callWebflowApi(method, endpoint, body = null) {
   const WEBFLOW_API_TOKEN = process.env.WEBFLOW_API_TOKEN;
   const fullUrl = `${webflowApiBase}${endpoint}`;
@@ -28,7 +27,7 @@ async function callWebflowApi(method, endpoint, body = null) {
       'Authorization': `Bearer ${WEBFLOW_API_TOKEN}`,
       'Content-Type': 'application/json',
     },
-    timeout, // Axios has a built-in timeout property
+    timeout,
   };
 
   if (body) {
@@ -36,10 +35,8 @@ async function callWebflowApi(method, endpoint, body = null) {
   }
 
   try {
-    // console.log(`      -> Sending [${method}] request to ${fullUrl} using axios...`);
     const response = await axios(options);
-    // console.log(`      -> Received response from ${fullUrl} with status: ${response.status}`);
-    return response.data; // axios automatically handles JSON parsing and returns data on success
+    return response.data;
   } catch (error) {
     if (axios.isCancel(error)) {
         console.error(`Request to ${fullUrl} was canceled or timed out.`);
@@ -62,7 +59,6 @@ async function fetchAllWebflowItemsPaginated(collectionId) {
     let hasMore = true;
 
     while(hasMore) {
-        // console.log(`   -> Fetching page for collection ${collectionId} (offset: ${offset})...`);
         const response = await callWebflowApi('GET', `/collections/${collectionId}/items?limit=${limit}&offset=${offset}`);
         
         if (response && response.items && response.items.length > 0) {
@@ -137,16 +133,6 @@ async function syncFull() {
   console.log('🔄  Full CRM → Webflow sync started…');
 
   try {
-    // --- Step 0: DIAGNOSTIC - Check general internet connectivity ---
-    try {
-        console.log("   -> Performing diagnostic check to google.com...");
-        await axios.get('https://google.com', { timeout: 10000 });
-        console.log("   ✓ Diagnostic check successful. Outbound connectivity is working.");
-    } catch (diagError) {
-        console.error("   ❌ CRITICAL: Diagnostic check to google.com failed. Vercel may have a general networking issue.", diagError.message);
-        throw new Error("Could not connect to external services.");
-    }
-
     // Step 1: Check all required environment variables
     const requiredEnvVars = {
       WEBFLOW_API_TOKEN: process.env.WEBFLOW_API_TOKEN,
@@ -283,14 +269,23 @@ async function syncFull() {
     console.log('\n✅  Full sync complete.');
 
   } catch (error) {
+    // We already log the specific error in the API call function,
+    // so here we just signal that the process failed.
     console.error('\n❌ A critical error occurred during the sync process.');
+    // Re-throw the error so the `waitUntil` promise in the webhook rejects,
+    // which will result in a proper error log in the Vercel console.
+    throw error;
   }
 }
 
+// Export the function for the webhook to use
 module.exports = syncFull;
 
+// Allow running the script directly from the command line for testing
 if (require.main === module) {
   syncFull().catch(err => {
-    console.error('\n❌  Sync script failed to run.');
+    // The error is already logged, so we just add a final message.
+    console.error('\n❌  Sync script failed to run directly.');
+    process.exit(1); // Exit with a non-zero code to indicate failure
   });
 }
