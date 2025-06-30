@@ -1,25 +1,23 @@
 /**
- * sync_full.js  – v2.4 (30 Jun 2025)
+ * sync_full.js  – v2.6 (30 Jun 2025)
  * One-way, full sync from Dynamics CRM → Webflow CMS
+ * - CRITICAL FIX: Added check for required CRM environment variables.
+ * - MAJOR FIX: Implemented pagination for all Webflow API calls.
  * - IMPROVED: Robust check for environment variables that logs a clear error message.
- * - Adds timeouts to Webflow API calls to prevent hangs.
- * - Adds detailed logging to pinpoint slow or failing data fetches.
- * - Automatically publishes every created/updated item so it’s visible on the live site
- * - Fills `isfullybookedboleantext` (PlainText) with "true" / "false"
  */
 
 require('dotenv').config();
-const { getEvents } = require('../lib/crm');
+// IMPORTANT: Now we import more from crm.js to get all data
+const { getEvents, getEventLocations, getEventCategories, getAirports } = require('../lib/crm');
 const fetch = require('node-fetch');
 
 // --- Helpers ---------------------------------------------------------------
 const webflowApiBase = 'https://api.webflow.com/v2';
 
 async function callWebflowApi(method, endpoint, body = null) {
-  // This function now relies on the WEBFLOW_API_TOKEN being checked in syncFull()
   const WEBFLOW_API_TOKEN = process.env.WEBFLOW_API_TOKEN;
   const controller = new AbortController();
-  const timeoutId = setTimeout(() => controller.abort(), 20000); // 20-second timeout
+  const timeoutId = setTimeout(() => controller.abort(), 30000); // 30-second timeout
 
   const options = {
     method,
@@ -38,12 +36,31 @@ async function callWebflowApi(method, endpoint, body = null) {
     return res.status === 204 ? null : res.json();
   } catch (error) {
     if (error.name === 'AbortError') {
-      throw new Error(`Webflow API call to ${endpoint} timed out after 20 seconds.`);
+      throw new Error(`Webflow API call to ${endpoint} timed out after 30 seconds.`);
     }
     throw error;
   } finally {
     clearTimeout(timeoutId);
   }
+}
+
+async function fetchAllWebflowItemsPaginated(collectionId) {
+    let allItems = [];
+    let offset = 0;
+    const limit = 100;
+    let hasMore = true;
+
+    while(hasMore) {
+        console.log(`   -> Fetching Webflow items from collection ${collectionId} (offset: ${offset})...`);
+        const response = await callWebflowApi('GET', `/collections/${collectionId}/items?limit=${limit}&offset=${offset}`);
+        
+        if (response.items && response.items.length > 0) {
+            allItems = allItems.concat(response.items);
+            offset += response.items.length;
+        }
+        hasMore = offset < response.pagination.total;
+    }
+    return allItems;
 }
 
 async function publishItem(collectionId, itemId) {
@@ -108,26 +125,28 @@ async function syncFull() {
   console.log('🔄  Full CRM → Webflow sync started…');
 
   try {
-    // --- NEW: Robust check for all required environment variables ---
+    // --- NEW: Robust check for ALL required environment variables (CRM + Webflow) ---
     const requiredEnvVars = {
+      // Webflow
       WEBFLOW_API_TOKEN: process.env.WEBFLOW_API_TOKEN,
       WEBFLOW_COLLECTION_ID_EVENTS: process.env.WEBFLOW_COLLECTION_ID_EVENTS,
       WEBFLOW_COLLECTION_ID_LOCATIONS: process.env.WEBFLOW_COLLECTION_ID_LOCATIONS,
       WEBFLOW_COLLECTION_ID_CATEGORIES: process.env.WEBFLOW_COLLECTION_ID_CATEGORIES,
       WEBFLOW_COLLECTION_ID_AIRPORTS: process.env.WEBFLOW_COLLECTION_ID_AIRPORTS,
+      // CRM
+      CRM_TENANT_ID: process.env.CRM_TENANT_ID,
+      CRM_CLIENT_ID: process.env.CRM_CLIENT_ID,
+      CRM_CLIENT_SECRET: process.env.CRM_CLIENT_SECRET,
+      CRM_BASE_URL: process.env.CRM_BASE_URL,
     };
 
     const missingVars = Object.keys(requiredEnvVars).filter(key => !requiredEnvVars[key]);
 
     if (missingVars.length > 0) {
-      // This will be caught by the catch block and logged correctly by Vercel.
       throw new Error(`Missing required environment variables: ${missingVars.join(', ')}`);
     }
-    console.log('   ✓ All environment variables are present.');
-    // --- End of new check ---
+    console.log('   ✓ All environment variables (CRM & Webflow) are present.');
 
-
-    // We can now safely use the collection IDs
     const COLLECTION_IDS = {
       EVENTS: requiredEnvVars.WEBFLOW_COLLECTION_ID_EVENTS,
       LOCATIONS: requiredEnvVars.WEBFLOW_COLLECTION_ID_LOCATIONS,
@@ -135,26 +154,28 @@ async function syncFull() {
       AIRPORTS: requiredEnvVars.WEBFLOW_COLLECTION_ID_AIRPORTS,
     };
 
-    console.log('   -> Fetching Webflow Locations...');
-    const locationsRes = await callWebflowApi('GET', `/collections/${COLLECTION_IDS.LOCATIONS}/items`);
-    console.log(`   ✓ Locations fetched: ${locationsRes.items.length} items.`);
-
-    console.log('   -> Fetching Webflow Categories...');
-    const categoriesRes = await callWebflowApi('GET', `/collections/${COLLECTION_IDS.CATEGORIES}/items`);
-    console.log(`   ✓ Categories fetched: ${categoriesRes.items.length} items.`);
-
-    console.log('   -> Fetching Webflow Airports...');
-    const airportsRes = await callWebflowApi('GET', `/collections/${COLLECTION_IDS.AIRPORTS}/items`);
-    console.log(`   ✓ Airports fetched: ${airportsRes.items.length} items.`);
-
-    console.log('   -> Fetching CRM Events (from getEvents)...');
-    const crmEventsRes = await getEvents();
+    // --- Fetch all data ---
+    console.log('   -> Fetching all data from CRM and Webflow...');
+    const [
+        webflowLocations, 
+        webflowCategories, 
+        webflowAirports, 
+        crmEventsRes
+    ] = await Promise.all([
+        fetchAllWebflowItemsPaginated(COLLECTION_IDS.LOCATIONS),
+        fetchAllWebflowItemsPaginated(COLLECTION_IDS.CATEGORIES),
+        fetchAllWebflowItemsPaginated(COLLECTION_IDS.AIRPORTS),
+        getEvents() // This is the main event data from CRM
+    ]);
+    
+    console.log(`   ✓ Webflow Locations fetched: ${webflowLocations.length} total items.`);
+    console.log(`   ✓ Webflow Categories fetched: ${webflowCategories.length} total items.`);
+    console.log(`   ✓ Webflow Airports fetched: ${webflowAirports.length} total items.`);
     console.log('   ✓ CRM Events fetched.');
 
-
-    const locationCache = new Map(locationsRes.items.map(i => [i.fieldData.eventlocationid, i.id]));
-    const categoryCache = new Map(categoriesRes.items.map(i => [i.fieldData['category-id'], i.id]));
-    const airportCache  = new Map(airportsRes.items.map(i => [i.fieldData.airportid, i.id]));
+    const locationCache = new Map(webflowLocations.map(i => [i.fieldData.eventlocationid, i.id]));
+    const categoryCache = new Map(webflowCategories.map(i => [i.fieldData['category-id'], i.id]));
+    const airportCache  = new Map(webflowAirports.map(i => [i.fieldData.airportid, i.id]));
 
     const crmEvents = crmEventsRes?.value ?? [];
     if (!crmEvents.length) {
@@ -162,15 +183,13 @@ async function syncFull() {
       return;
     }
 
-    // Pull current Event items once
-    const webflowEvents = await callWebflowApi('GET', `/collections/${COLLECTION_IDS.EVENTS}/items`);
-    const eventCache = new Map(webflowEvents.items.map(i => [i.fieldData.eventid, i.id]));
+    const webflowEvents = await fetchAllWebflowItemsPaginated(COLLECTION_IDS.EVENTS);
+    const eventCache = new Map(webflowEvents.map(i => [i.fieldData.eventid, i.id]));
 
     console.log(`• ${crmEvents.length} CRM events to process`);
     for (const ev of crmEvents) {
-      console.log(`\n→ ${ev.m8_name} (${ev.m8_eventid})`);
+      console.log(`\n→ Processing Event: ${ev.m8_name} (${ev.m8_eventid})`);
 
-      /* --------- 1. Upsert Location / Category / Airport references ---------- */
       const locationId = ev.m8_eventlocation
         ? await upsertReferenceItem({
             cache: locationCache,
@@ -216,7 +235,6 @@ async function syncFull() {
         ),
       );
 
-      /* ---------------------- 2. Upsert main Event item ---------------------- */
       const fieldData = {
         name: ev.m8_name,
         slug: slugify(ev.m8_name),
@@ -257,18 +275,12 @@ async function syncFull() {
     console.log('\n✅  Full sync complete.');
 
   } catch (error) {
-    // Catch any error during the sync and log it clearly.
     console.error('\n❌ A critical error occurred during the sync process:', error);
   }
 }
 
-// Export the function so it can be `require`'d by other files like the webhook.
 module.exports = syncFull;
 
-
-// ---------------------------------------------------------------------------
-// This part allows the script to be run directly from the command line
-// using `node scripts/sync_full.js`
 if (require.main === module) {
   syncFull().catch(err => {
     console.error('\n❌  Sync failed:', err);
