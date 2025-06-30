@@ -1,8 +1,8 @@
 /**
- * sync_full.js  – v3.0 (30 Jun 2025)
+ * sync_full.js  – v3.1 (30 Jun 2025)
  * One-way, full sync from Dynamics CRM → Webflow CMS
- * - CRITICAL FIX: Replaced `node-fetch` with `axios` to resolve low-level network compatibility issues in the Vercel environment.
- * - This version should be stable and complete the sync process.
+ * - ADDED: A diagnostic check to google.com to confirm outbound connectivity from Vercel.
+ * - CRITICAL FIX: Replaced `node-fetch` with `axios`.
  */
 
 require('dotenv').config();
@@ -18,8 +18,6 @@ async function callWebflowApi(method, endpoint, body = null) {
   const WEBFLOW_API_TOKEN = process.env.WEBFLOW_API_TOKEN;
   const fullUrl = `${webflowApiBase}${endpoint}`;
   
-  // Create a new AbortController instance for each request
-  const controller = new AbortController();
   const timeout = 45000; // 45 seconds
 
   const options = {
@@ -30,7 +28,6 @@ async function callWebflowApi(method, endpoint, body = null) {
       'Authorization': `Bearer ${WEBFLOW_API_TOKEN}`,
       'Content-Type': 'application/json',
     },
-    signal: controller.signal, // Connect the abort signal
     timeout, // Axios has a built-in timeout property
   };
 
@@ -39,26 +36,21 @@ async function callWebflowApi(method, endpoint, body = null) {
   }
 
   try {
-    console.log(`      -> Sending [${method}] request to ${fullUrl} using axios...`);
+    // console.log(`      -> Sending [${method}] request to ${fullUrl} using axios...`);
     const response = await axios(options);
-    console.log(`      -> Received response from ${fullUrl} with status: ${response.status}`);
+    // console.log(`      -> Received response from ${fullUrl} with status: ${response.status}`);
     return response.data; // axios automatically handles JSON parsing and returns data on success
   } catch (error) {
     if (axios.isCancel(error)) {
         console.error(`Request to ${fullUrl} was canceled or timed out.`);
     } else if (error.response) {
-      // The request was made and the server responded with a status code
-      // that falls out of the range of 2xx
       console.error(`      -> Webflow API Error Status: ${error.response.status}`);
       console.error(`      -> Webflow API Error Data:`, error.response.data);
     } else if (error.request) {
-      // The request was made but no response was received
       console.error(`      -> No response received from Webflow API for request:`, error.request);
     } else {
-      // Something happened in setting up the request that triggered an Error
       console.error('      -> Axios request setup error:', error.message);
     }
-    // Re-throw the error to be caught by the main try/catch block
     throw error;
   }
 }
@@ -70,7 +62,7 @@ async function fetchAllWebflowItemsPaginated(collectionId) {
     let hasMore = true;
 
     while(hasMore) {
-        console.log(`   -> Fetching page for collection ${collectionId} (offset: ${offset})...`);
+        // console.log(`   -> Fetching page for collection ${collectionId} (offset: ${offset})...`);
         const response = await callWebflowApi('GET', `/collections/${collectionId}/items?limit=${limit}&offset=${offset}`);
         
         if (response && response.items && response.items.length > 0) {
@@ -145,6 +137,16 @@ async function syncFull() {
   console.log('🔄  Full CRM → Webflow sync started…');
 
   try {
+    // --- Step 0: DIAGNOSTIC - Check general internet connectivity ---
+    try {
+        console.log("   -> Performing diagnostic check to google.com...");
+        await axios.get('https://google.com', { timeout: 10000 });
+        console.log("   ✓ Diagnostic check successful. Outbound connectivity is working.");
+    } catch (diagError) {
+        console.error("   ❌ CRITICAL: Diagnostic check to google.com failed. Vercel may have a general networking issue.", diagError.message);
+        throw new Error("Could not connect to external services.");
+    }
+
     // Step 1: Check all required environment variables
     const requiredEnvVars = {
       WEBFLOW_API_TOKEN: process.env.WEBFLOW_API_TOKEN,
@@ -282,8 +284,6 @@ async function syncFull() {
 
   } catch (error) {
     console.error('\n❌ A critical error occurred during the sync process.');
-    // We don't log the full error object here to avoid leaking sensitive details in logs.
-    // The specific error was already logged in the `callWebflowApi` catch block.
   }
 }
 
@@ -291,7 +291,6 @@ module.exports = syncFull;
 
 if (require.main === module) {
   syncFull().catch(err => {
-    // The specific error is logged inside the function's catch block
     console.error('\n❌  Sync script failed to run.');
   });
 }
