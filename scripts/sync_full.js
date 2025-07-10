@@ -13,6 +13,12 @@ const axios = require('axios');
 // --- Helpers ---------------------------------------------------------------
 const webflowApiBase = 'https://api.webflow.com/v2';
 
+/**
+ * [MODIFIED] Makes a call to the Webflow API with rate-limiting in mind.
+ * It automatically adds a small delay to every request and implements a
+ * retry mechanism with exponential backoff if a 429 "Too Many Requests"
+ * error is encountered.
+ */
 async function callWebflowApi(method, endpoint, body = null) {
   const WEBFLOW_API_TOKEN = process.env.WEBFLOW_API_TOKEN;
   const fullUrl = `${webflowApiBase}${endpoint}`;
@@ -34,22 +40,53 @@ async function callWebflowApi(method, endpoint, body = null) {
     options.data = body;
   }
 
-  try {
-    const response = await axios(options);
-    return response.data;
-  } catch (error) {
-    if (axios.isCancel(error)) {
-        console.error(`Request to ${fullUrl} was canceled or timed out.`);
-    } else if (error.response) {
-      console.error(`      -> Webflow API Error Status: ${error.response.status}`);
-      console.error(`      -> Webflow API Error Data:`, error.response.data);
-    } else if (error.request) {
-      console.error(`      -> No response received from Webflow API for request:`, error.request);
-    } else {
-      console.error('      -> Axios request setup error:', error.message);
+  // --- START: NEW Rate Limiting & Retry Logic ---
+  const maxRetries = 5;
+  let attempt = 0;
+
+  while (attempt < maxRetries) {
+    try {
+      // Add a small, consistent delay before every request to stay under the limit.
+      // 1100ms provides a safe buffer below the 60 requests/minute limit.
+      await new Promise(resolve => setTimeout(resolve, 1100));
+      
+      const response = await axios(options);
+      return response.data;
+    } catch (error) {
+      // Check specifically for the rate limit error (status 429)
+      if (error.response && error.response.status === 429) {
+        attempt++;
+        const retryAfter = error.response.headers['retry-after'];
+        // Use the wait time suggested by Webflow's API, or default to an exponential backoff
+        const waitTime = retryAfter ? parseInt(retryAfter, 10) * 1000 : (2 ** attempt) * 1000;
+        
+        console.warn(`      -> Rate limit hit. Retrying after ${waitTime / 1000}s... (Attempt ${attempt}/${maxRetries})`);
+        
+        if (attempt >= maxRetries) {
+          console.error(`      -> Max retries reached for request to ${fullUrl}. Aborting.`);
+          throw error; // Rethrow the error after the final attempt fails
+        }
+        
+        await new Promise(resolve => setTimeout(resolve, waitTime));
+      } else {
+        // Handle all other types of errors (e.g., timeouts, validation errors)
+        if (axios.isCancel(error)) {
+            console.error(`Request to ${fullUrl} was canceled or timed out.`);
+        } else if (error.response) {
+          console.error(`      -> Webflow API Error Status: ${error.response.status}`);
+          console.error(`      -> Webflow API Error Data:`, error.response.data);
+        } else if (error.request) {
+          console.error(`      -> No response received from Webflow API for request:`, error.request);
+        } else {
+          console.error('      -> Axios request setup error:', error.message);
+        }
+        throw error; // Rethrow the error to be caught by the main sync function
+      }
     }
-    throw error;
   }
+  // This line should theoretically not be reached, but it's good practice
+  throw new Error('Exited retry loop unexpectedly in callWebflowApi.');
+  // --- END: NEW Rate Limiting & Retry Logic ---
 }
 
 async function fetchAllWebflowItemsPaginated(collectionId) {
@@ -269,8 +306,8 @@ async function syncFull() {
     console.log('\n✅  Full sync complete.');
 
   } catch (error) {
-    // We already log the specific error in the API call function,
-    // so here we just signal that the process failed.
+    // The specific error is now logged in the API call function during the last retry attempt.
+    // Here we just signal that the overall process failed.
     console.error('\n❌ A critical error occurred during the sync process.');
     // Re-throw the error so the `waitUntil` promise in the webhook rejects,
     // which will result in a proper error log in the Vercel console.
