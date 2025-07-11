@@ -1,29 +1,24 @@
 /**
- * sync_full.js  – v3.2 (30 Jun 2025)
- * One-way, full sync from Dynamics CRM → Webflow CMS
- * - FIXED: Now runs reliably as a background task on Vercel Pro.
- * - REMOVED: The initial diagnostic check to google.com is no longer needed.
- * - NOTE: This script is triggered by api/crm-webhook.js, which uses `waitUntil`.
+ * sync_single.js – v1.1 (11 Jul 2025)
+ * One-way, single-item sync from Dynamics CRM → Webflow CMS
+ * - FIX: Added missing helper functions from full sync script.
  */
 
 require('dotenv').config();
 const { getEvents } = require('../lib/crm');
 const axios = require('axios');
 
-// --- Helpers ---------------------------------------------------------------
+// --- START: MISSING HELPER FUNCTIONS ---------------------------------------
+
 const webflowApiBase = 'https://api.webflow.com/v2';
 
 /**
- * [MODIFIED] Makes a call to the Webflow API with rate-limiting in mind.
- * It automatically adds a small delay to every request and implements a
- * retry mechanism with exponential backoff if a 429 "Too Many Requests"
- * error is encountered.
+ * Makes a call to the Webflow API with rate-limiting and retry logic.
  */
 async function callWebflowApi(method, endpoint, body = null) {
   const WEBFLOW_API_TOKEN = process.env.WEBFLOW_API_TOKEN;
   const fullUrl = `${webflowApiBase}${endpoint}`;
-  
-  const timeout = 45000; // 45 seconds
+  const timeout = 45000;
 
   const options = {
     method,
@@ -40,55 +35,46 @@ async function callWebflowApi(method, endpoint, body = null) {
     options.data = body;
   }
 
-  // --- START: NEW Rate Limiting & Retry Logic ---
   const maxRetries = 5;
   let attempt = 0;
 
   while (attempt < maxRetries) {
     try {
-      // Add a small, consistent delay before every request to stay under the limit.
-      // 1100ms provides a safe buffer below the 60 requests/minute limit.
-      await new Promise(resolve => setTimeout(resolve, 1100));
-      
+      await new Promise(resolve => setTimeout(resolve, 1100)); // Rate limit buffer
       const response = await axios(options);
       return response.data;
     } catch (error) {
-      // Check specifically for the rate limit error (status 429)
       if (error.response && error.response.status === 429) {
         attempt++;
         const retryAfter = error.response.headers['retry-after'];
-        // Use the wait time suggested by Webflow's API, or default to an exponential backoff
         const waitTime = retryAfter ? parseInt(retryAfter, 10) * 1000 : (2 ** attempt) * 1000;
         
         console.warn(`      -> Rate limit hit. Retrying after ${waitTime / 1000}s... (Attempt ${attempt}/${maxRetries})`);
         
         if (attempt >= maxRetries) {
           console.error(`      -> Max retries reached for request to ${fullUrl}. Aborting.`);
-          throw error; // Rethrow the error after the final attempt fails
+          throw error;
         }
-        
         await new Promise(resolve => setTimeout(resolve, waitTime));
       } else {
-        // Handle all other types of errors (e.g., timeouts, validation errors)
         if (axios.isCancel(error)) {
             console.error(`Request to ${fullUrl} was canceled or timed out.`);
         } else if (error.response) {
           console.error(`      -> Webflow API Error Status: ${error.response.status}`);
           console.error(`      -> Webflow API Error Data:`, error.response.data);
-        } else if (error.request) {
-          console.error(`      -> No response received from Webflow API for request:`, error.request);
         } else {
           console.error('      -> Axios request setup error:', error.message);
         }
-        throw error; // Rethrow the error to be caught by the main sync function
+        throw error;
       }
     }
   }
-  // This line should theoretically not be reached, but it's good practice
   throw new Error('Exited retry loop unexpectedly in callWebflowApi.');
-  // --- END: NEW Rate Limiting & Retry Logic ---
 }
 
+/**
+ * Fetches all items from a Webflow collection using pagination.
+ */
 async function fetchAllWebflowItemsPaginated(collectionId) {
     let allItems = [];
     let offset = 0;
@@ -97,17 +83,18 @@ async function fetchAllWebflowItemsPaginated(collectionId) {
 
     while(hasMore) {
         const response = await callWebflowApi('GET', `/collections/${collectionId}/items?limit=${limit}&offset=${offset}`);
-        
         if (response && response.items && response.items.length > 0) {
             allItems = allItems.concat(response.items);
             offset += response.items.length;
         }
-        
         hasMore = response && response.pagination && (offset < response.pagination.total);
     }
     return allItems;
 }
 
+/**
+ * Publishes a specific item in a Webflow collection.
+ */
 async function publishItem(collectionId, itemId) {
   await callWebflowApi(
     'POST',
@@ -116,6 +103,9 @@ async function publishItem(collectionId, itemId) {
   );
 }
 
+/**
+ * Creates a URL-friendly slug from a string.
+ */
 const slugify = txt =>
   (txt || '')
     .toString()
@@ -126,6 +116,9 @@ const slugify = txt =>
     .replace(/--+/g, '-')
     .replace(/^-+|-+$/g, '');
 
+/**
+ * Creates or updates a reference item (e.g., location, category) in Webflow.
+ */
 async function upsertReferenceItem({
   cache,
   collectionId,
@@ -154,7 +147,7 @@ async function upsertReferenceItem({
     return webflowId;
   }
 
-  console.log(`   ↳ creating: “${name}” (${crmId})`);
+  console.log(`   ↳ Creating new reference item: “${name}” (${crmId})`);
   const { id } = await callWebflowApi('POST', `/collections/${collectionId}/items`, {
     isArchived: false,
     isDraft: false,
@@ -165,12 +158,24 @@ async function upsertReferenceItem({
   return id;
 }
 
-// --- Main sync -------------------------------------------------------------
-async function syncFull() {
-  console.log('🔄  Full CRM → Webflow sync started…');
+// --- END: MISSING HELPER FUNCTIONS -----------------------------------------
+
+
+// --- Main sync for a SINGLE EVENT ------------------------------------------
+/**
+ * Syncs a single CRM event to Webflow based on its ID.
+ * @param {string} eventId The CRM GUID of the event to sync.
+ */
+async function syncSingleEvent(eventId) {
+    // ... This function remains the same as in the previous answer ...
+    // ... No changes are needed inside syncSingleEvent itself.
+  if (!eventId) {
+    console.error('❌ Sync aborted: No Event ID was provided.');
+    return;
+  }
+  console.log(`🔄 Single Event Sync started for ID: ${eventId}`);
 
   try {
-    // Step 1: Check all required environment variables
     const requiredEnvVars = {
       WEBFLOW_API_TOKEN: process.env.WEBFLOW_API_TOKEN,
       WEBFLOW_COLLECTION_ID_EVENTS: process.env.WEBFLOW_COLLECTION_ID_EVENTS,
@@ -184,11 +189,9 @@ async function syncFull() {
     };
 
     const missingVars = Object.keys(requiredEnvVars).filter(key => !requiredEnvVars[key]);
-
     if (missingVars.length > 0) {
       throw new Error(`Missing required environment variables: ${missingVars.join(', ')}`);
     }
-    console.log('   ✓ All environment variables (CRM & Webflow) are present.');
 
     const COLLECTION_IDS = {
       EVENTS: requiredEnvVars.WEBFLOW_COLLECTION_ID_EVENTS,
@@ -196,48 +199,35 @@ async function syncFull() {
       CATEGORIES: requiredEnvVars.WEBFLOW_COLLECTION_ID_CATEGORIES,
       AIRPORTS: requiredEnvVars.WEBFLOW_COLLECTION_ID_AIRPORTS,
     };
-
-    // Step 2: Fetch all data SEQUENTIALLY to isolate issues
-    console.log('--- STARTING SEQUENTIAL FETCH ---');
     
-    console.log('[1/4] Fetching Webflow Locations...');
-    const webflowLocations = await fetchAllWebflowItemsPaginated(COLLECTION_IDS.LOCATIONS);
-    console.log(`   ✓ Webflow Locations fetched: ${webflowLocations.length} total items.`);
+    console.log('[1/3] Fetching Webflow reference collections (Locations, Categories, Airports)...');
+    const [webflowLocations, webflowCategories, webflowAirports] = await Promise.all([
+        fetchAllWebflowItemsPaginated(COLLECTION_IDS.LOCATIONS),
+        fetchAllWebflowItemsPaginated(COLLECTION_IDS.CATEGORIES),
+        fetchAllWebflowItemsPaginated(COLLECTION_IDS.AIRPORTS)
+    ]);
+    console.log('   ✓ Caches for reference collections are ready.');
     
-    console.log('[2/4] Fetching Webflow Categories...');
-    const webflowCategories = await fetchAllWebflowItemsPaginated(COLLECTION_IDS.CATEGORIES);
-    console.log(`   ✓ Webflow Categories fetched: ${webflowCategories.length} total items.`);
+    console.log(`   [2/3] Fetching event ${eventId} from CRM...`);
+    const crmEventsRes = await getEvents({ entityids: [eventId] });
+    const crmEvents = crmEventsRes?.value ?? [];
 
-    console.log('[3/4] Fetching Webflow Airports...');
-    const webflowAirports = await fetchAllWebflowItemsPaginated(COLLECTION_IDS.AIRPORTS);
-    console.log(`   ✓ Webflow Airports fetched: ${webflowAirports.length} total items.`);
+    if (!crmEvents.length) {
+        console.warn(`⚠️ No event found in CRM with ID ${eventId}. It might be inactive or deleted. Sync for this ID will stop.`);
+        return;
+    }
+    const ev = crmEvents[0];
+    console.log(`   ✓ Found CRM Event: "${ev.m8_name}"`);
 
-    console.log('[4/4] Fetching CRM Events...');
-    const crmEventsRes = await getEvents();
-    console.log('   ✓ CRM Events fetched.');
-
-    console.log('--- SEQUENTIAL FETCH COMPLETE ---');
-    
-    // Step 3: Process the fetched data
+    console.log('   [3/3] Processing and upserting event to Webflow...');
     const locationCache = new Map(webflowLocations.map(i => [i.fieldData.eventlocationid, i.id]));
     const categoryCache = new Map(webflowCategories.map(i => [i.fieldData['category-id'], i.id]));
     const airportCache  = new Map(webflowAirports.map(i => [i.fieldData.airportid, i.id]));
 
-    const crmEvents = crmEventsRes?.value ?? [];
-    if (!crmEvents.length) {
-      console.log('No events returned from CRM – nothing to sync.');
-      return;
-    }
-
-    console.log('Fetching main Webflow Event collection to build cache...');
     const webflowEvents = await fetchAllWebflowItemsPaginated(COLLECTION_IDS.EVENTS);
     const eventCache = new Map(webflowEvents.map(i => [i.fieldData.eventid, i.id]));
 
-    console.log(`• ${crmEvents.length} CRM events to process`);
-    for (const ev of crmEvents) {
-      console.log(`\n→ Processing Event: ${ev.m8_name} (${ev.m8_eventid})`);
-      
-      const locationId = ev.m8_eventlocation ? await upsertReferenceItem({
+    const locationId = ev.m8_eventlocation ? await upsertReferenceItem({
         cache: locationCache,
         collectionId: COLLECTION_IDS.LOCATIONS,
         crmIdFieldSlug: 'eventlocationid',
@@ -292,37 +282,39 @@ async function syncFull() {
         location:  locationId ? [locationId] : [],
       };
 
-      if (eventCache.has(ev.m8_eventid)) {
-        const webflowId = eventCache.get(ev.m8_eventid);
-        await callWebflowApi('PATCH', `/collections/${COLLECTION_IDS.EVENTS}/items/${webflowId}`, { fieldData });
-        await publishItem(COLLECTION_IDS.EVENTS, webflowId);
-        console.log('   ↻ updated & published');
-      } else {
-        const { id: newId } = await callWebflowApi('POST', `/collections/${COLLECTION_IDS.EVENTS}/items`, { isArchived: false, isDraft: false, fieldData });
-        await publishItem(COLLECTION_IDS.EVENTS, newId);
-        console.log('   ✓ created & published');
-      }
+    if (eventCache.has(ev.m8_eventid)) {
+      const webflowId = eventCache.get(ev.m8_eventid);
+      console.log(`   → Event exists in Webflow. Updating item ${webflowId}...`);
+      await callWebflowApi('PATCH', `/collections/${COLLECTION_IDS.EVENTS}/items/${webflowId}`, { fieldData });
+      await publishItem(COLLECTION_IDS.EVENTS, webflowId);
+      console.log('   ↻ Updated & published successfully.');
+    } else {
+      console.log('   → Event not found in Webflow. Creating new item...');
+      const { id: newId } = await callWebflowApi('POST', `/collections/${COLLECTION_IDS.EVENTS}/items`, { isArchived: false, isDraft: false, fieldData });
+      await publishItem(COLLECTION_IDS.EVENTS, newId);
+      console.log('   ✓ Created & published successfully.');
     }
-    console.log('\n✅  Full sync complete.');
+
+    console.log(`\n✅  Single event sync complete for ${eventId}.`);
 
   } catch (error) {
-    // The specific error is now logged in the API call function during the last retry attempt.
-    // Here we just signal that the overall process failed.
-    console.error('\n❌ A critical error occurred during the sync process.');
-    // Re-throw the error so the `waitUntil` promise in the webhook rejects,
-    // which will result in a proper error log in the Vercel console.
+    console.error(`\n❌ A critical error occurred during the single sync for event ${eventId}.`);
     throw error;
   }
 }
 
 // Export the function for the webhook to use
-module.exports = syncFull;
+module.exports = syncSingleEvent;
 
 // Allow running the script directly from the command line for testing
 if (require.main === module) {
-  syncFull().catch(err => {
-    // The error is already logged, so we just add a final message.
+  const testEventId = process.argv[2]; 
+  if (!testEventId) {
+    console.error('Please provide an event ID to test. Usage: node scripts/sync_single.js <event-id>');
+    process.exit(1);
+  }
+  syncSingleEvent(testEventId).catch(err => {
     console.error('\n❌  Sync script failed to run directly.');
-    process.exit(1); // Exit with a non-zero code to indicate failure
+    process.exit(1);
   });
 }
