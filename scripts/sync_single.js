@@ -1,7 +1,9 @@
 /**
- * sync_single.js – v2.1 (11 Jul 2025)
+ * sync_single.js – v2.2 (11 Jul 2025)
  * One-way, single-item sync from Dynamics CRM → Webflow CMS
- * - FIX: Prevents sending a body on GET requests to avoid 400 errors from Webflow.
+ * - FIXED: Now correctly archives (unpublishes) an item in Webflow if its
+ * corresponding 'iseventpublished' flag in the CRM is set to false.
+ * - NOTE: Prevents sending a body on GET requests to avoid 400 errors from Webflow.
  */
 
 require('dotenv').config();
@@ -11,7 +13,6 @@ const axios = require('axios');
 // --- Helper Functions ------------------------------------------------------
 const webflowApiBase = 'https://api.webflow.com/v2';
 
-// 🔽 THIS FUNCTION CONTAINS THE FIX 🔽
 async function callWebflowApi(method, endpoint, body = null) {
   const WEBFLOW_API_TOKEN = process.env.WEBFLOW_API_TOKEN;
   const fullUrl = `${webflowApiBase}${endpoint}`;
@@ -26,11 +27,8 @@ async function callWebflowApi(method, endpoint, body = null) {
       'Content-Type': 'application/json',
     },
     timeout,
-    // The 'data' property is now set conditionally below
   };
 
-  // ✅ FIX: Only add a 'data' property if a body exists.
-  // This prevents sending a body on GET requests.
   if (body) {
     options.data = body;
   }
@@ -100,8 +98,6 @@ async function upsertReferenceItem({ cache, collectionId, crmIdFieldSlug, crmId,
 }
 
 async function deleteWebflowItem(collectionId, itemId) {
-  // NOTE: A DELETE request in Axios *can* have a body, so our fix in callWebflowApi is safe.
-  // We aren't sending one here, but the function handles it correctly if needed.
   await callWebflowApi('DELETE', `/collections/${collectionId}/items/${itemId}`);
 }
 
@@ -165,7 +161,7 @@ async function syncSingleEvent(eventId, changeType = 'Update') {
     const crmEvents = crmEventsRes?.value ?? [];
 
     if (!crmEvents.length) {
-      console.warn(`⚠️ No event found in CRM with ID ${eventId}. It might be inactive. Sync will stop.`);
+      console.warn(`⚠️ No event found in CRM with ID ${eventId}. It might be inactive or deleted. Sync will stop.`);
       return;
     }
     const ev = crmEvents[0];
@@ -184,18 +180,37 @@ async function syncSingleEvent(eventId, changeType = 'Update') {
 
     const fieldData = { name: ev.m8_name, slug: slugify(ev.m8_name), eventid: ev.m8_eventid, startdate: ev.m8_startdate, enddate: ev.m8_enddate, startingamount: ev.m8_startingamount, drivingdays: ev.m8_drivingdays, eventbookingstatuscode: ev.m8_eventbookingstatuscode, isflightincluded: ev.m8_isflightincluded, iseventpublished: ev.m8_iseventpublished, isaccommodationandcateringincluded: ev.m8_isaccommodationandcateringincluded, isfullybooked: ev.m8_isfullybooked, isfullybookedboleantext: ev.m8_isfullybooked ? 'true' : 'false', availablevehicles: ev.m8_availablevehicles, categorie: categoryIds.filter(Boolean), airport: airportIds.filter(Boolean), location: locationId ? [locationId] : [], };
 
+    // --- ✅ START: UPDATED LOGIC ---
     if (eventCache.has(ev.m8_eventid)) {
       const webflowId = eventCache.get(ev.m8_eventid);
-      console.log(`   → Event exists in Webflow. Updating item ${webflowId}...`);
-      await callWebflowApi('PATCH', `/collections/${COLLECTION_IDS.EVENTS}/items/${webflowId}`, { fieldData });
-      await publishItem(COLLECTION_IDS.EVENTS, webflowId);
-      console.log('   ↻ Updated & published successfully.');
+
+      // Check the 'iseventpublished' flag from the CRM
+      if (ev.m8_iseventpublished) {
+        // If it SHOULD be published, update the data and publish it.
+        console.log(`   → Event should be published. Updating and publishing item ${webflowId}...`);
+        await callWebflowApi('PATCH', `/collections/${COLLECTION_IDS.EVENTS}/items/${webflowId}`, {
+          isArchived: false,
+          isDraft: false,
+          fieldData
+        });
+        await publishItem(COLLECTION_IDS.EVENTS, webflowId);
+        console.log('   ✓ Updated & published successfully.');
+      } else {
+        // If it should NOT be published, archive it.
+        console.log(`   → Event should NOT be published. Archiving item ${webflowId}...`);
+        await callWebflowApi('PATCH', `/collections/${COLLECTION_IDS.EVENTS}/items/${webplowId}`, {
+          isArchived: true
+        });
+        console.log('   ✓ Item successfully archived (unpublished).');
+      }
     } else {
+      // Logic for creating a new item
       console.log('   → Event not found in Webflow. Creating new item...');
       const { id: newId } = await callWebflowApi('POST', `/collections/${COLLECTION_IDS.EVENTS}/items`, { isArchived: false, isDraft: false, fieldData });
       await publishItem(COLLECTION_IDS.EVENTS, newId);
       console.log('   ✓ Created & published successfully.');
     }
+    // --- ✅ END: UPDATED LOGIC ---
 
   } catch (error) {
     console.error(`\n❌ A critical error occurred during the sync for event ${eventId} (Type: ${changeType}).`);
