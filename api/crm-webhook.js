@@ -1,10 +1,10 @@
 // api/crm-webhook.js (Serverless Function for Vercel)
-// Updated to trigger a targeted sync based on the webhook payload.
+// v2.0 - Updated to handle targeted syncs for Create, Update, and Delete
 
 require('dotenv').config();
 const jwt = require('jsonwebtoken');
 const { waitUntil } = require('@vercel/functions');
-const syncSingleEvent = require('../scripts/sync_single'); // ⬅️ IMPORT the new single sync function
+const syncSingleEvent = require('../scripts/sync_single'); // ⬅️ IMPORTANT: Points to the new script
 
 module.exports = async (req, res) => {
   // 1. Validate HTTP Method
@@ -30,7 +30,7 @@ module.exports = async (req, res) => {
     const token = auth.split(' ')[1];
     const payload = jwt.verify(token, secret);
 
-    // 4. Validate the Payload Content (entityName and recordId are crucial)
+    // 4. Validate the Payload Content
     const requiredFields = ['entityName', 'recordId', 'changeType'];
     const missingFields = requiredFields.filter(field => !payload[field]);
 
@@ -44,7 +44,7 @@ module.exports = async (req, res) => {
 
     // 5. If valid, accept the webhook and start the background task
     console.log('✅ CRM webhook accepted:', payload);
-    
+
     // We only care about the 'Event' entity for now
     if (payload.entityName !== 'Event') {
         console.log(`  -> Ignoring webhook for entity '${payload.entityName}'. No action taken.`);
@@ -52,12 +52,13 @@ module.exports = async (req, res) => {
     }
 
     /*
-     * ✅ Use waitUntil() to trigger the targeted sync for the specific recordId.
-     * This is far more efficient than a full sync.
+     * ✅ Use waitUntil() to trigger the targeted sync, passing both the
+     * recordId and the changeType for precise action.
      */
     waitUntil(
-      syncSingleEvent(payload.recordId) // ⬅️ CALL the new function with the recordId
-        .then(() => console.log(`✔︎ Single event sync for ${payload.recordId} finished successfully.`))
+      // Pass both the ID and the change type to the sync function
+      syncSingleEvent(payload.recordId, payload.changeType)
+        .then(() => console.log(`✔︎ Sync (${payload.changeType}) for ${payload.recordId} finished successfully.`))
         .catch(err => console.error(`❌ A critical error occurred during the background sync for ${payload.recordId}:`, err))
     );
 

@@ -1,20 +1,17 @@
 /**
- * sync_single.js – v1.1 (11 Jul 2025)
+ * sync_single.js – v2.0 (11 Jul 2025)
  * One-way, single-item sync from Dynamics CRM → Webflow CMS
- * - FIX: Added missing helper functions from full sync script.
+ * - Handles Create, Update, and Delete operations based on webhook payload.
+ * - This script is triggered by api/crm-webhook.js.
  */
 
 require('dotenv').config();
 const { getEvents } = require('../lib/crm');
 const axios = require('axios');
 
-// --- START: MISSING HELPER FUNCTIONS ---------------------------------------
-
+// --- Helpers (Copied from sync_full.js) ------------------------------------
 const webflowApiBase = 'https://api.webflow.com/v2';
 
-/**
- * Makes a call to the Webflow API with rate-limiting and retry logic.
- */
 async function callWebflowApi(method, endpoint, body = null) {
   const WEBFLOW_API_TOKEN = process.env.WEBFLOW_API_TOKEN;
   const fullUrl = `${webflowApiBase}${endpoint}`;
@@ -29,18 +26,15 @@ async function callWebflowApi(method, endpoint, body = null) {
       'Content-Type': 'application/json',
     },
     timeout,
+    data: body,
   };
-
-  if (body) {
-    options.data = body;
-  }
 
   const maxRetries = 5;
   let attempt = 0;
 
   while (attempt < maxRetries) {
     try {
-      await new Promise(resolve => setTimeout(resolve, 1100)); // Rate limit buffer
+      await new Promise(resolve => setTimeout(resolve, 1100));
       const response = await axios(options);
       return response.data;
     } catch (error) {
@@ -48,23 +42,12 @@ async function callWebflowApi(method, endpoint, body = null) {
         attempt++;
         const retryAfter = error.response.headers['retry-after'];
         const waitTime = retryAfter ? parseInt(retryAfter, 10) * 1000 : (2 ** attempt) * 1000;
-        
         console.warn(`      -> Rate limit hit. Retrying after ${waitTime / 1000}s... (Attempt ${attempt}/${maxRetries})`);
-        
-        if (attempt >= maxRetries) {
-          console.error(`      -> Max retries reached for request to ${fullUrl}. Aborting.`);
-          throw error;
-        }
+        if (attempt >= maxRetries) throw error;
         await new Promise(resolve => setTimeout(resolve, waitTime));
       } else {
-        if (axios.isCancel(error)) {
-            console.error(`Request to ${fullUrl} was canceled or timed out.`);
-        } else if (error.response) {
-          console.error(`      -> Webflow API Error Status: ${error.response.status}`);
-          console.error(`      -> Webflow API Error Data:`, error.response.data);
-        } else {
-          console.error('      -> Axios request setup error:', error.message);
-        }
+        if (error.response) console.error(`      -> Webflow API Error: ${error.response.status}`, error.response.data);
+        else console.error('      -> Axios request setup error:', error.message);
         throw error;
       }
     }
@@ -72,110 +55,66 @@ async function callWebflowApi(method, endpoint, body = null) {
   throw new Error('Exited retry loop unexpectedly in callWebflowApi.');
 }
 
-/**
- * Fetches all items from a Webflow collection using pagination.
- */
 async function fetchAllWebflowItemsPaginated(collectionId) {
     let allItems = [];
     let offset = 0;
     const limit = 100;
     let hasMore = true;
-
     while(hasMore) {
         const response = await callWebflowApi('GET', `/collections/${collectionId}/items?limit=${limit}&offset=${offset}`);
-        if (response && response.items && response.items.length > 0) {
+        if (response?.items?.length > 0) {
             allItems = allItems.concat(response.items);
             offset += response.items.length;
         }
-        hasMore = response && response.pagination && (offset < response.pagination.total);
+        hasMore = response?.pagination && (offset < response.pagination.total);
     }
     return allItems;
 }
 
-/**
- * Publishes a specific item in a Webflow collection.
- */
 async function publishItem(collectionId, itemId) {
-  await callWebflowApi(
-    'POST',
-    `/collections/${collectionId}/items/publish`,
-    { itemIds: [itemId] },
-  );
+  await callWebflowApi('POST', `/collections/${collectionId}/items/publish`, { itemIds: [itemId] });
 }
 
-/**
- * Creates a URL-friendly slug from a string.
- */
-const slugify = txt =>
-  (txt || '')
-    .toString()
-    .toLowerCase()
-    .trim()
-    .replace(/\s+/g, '-')
-    .replace(/[^\w-]+/g, '')
-    .replace(/--+/g, '-')
-    .replace(/^-+|-+$/g, '');
+const slugify = txt => (txt || '').toString().toLowerCase().trim().replace(/\s+/g, '-').replace(/[^\w-]+/g, '').replace(/--+/g, '-').replace(/^-+|-+$/g, '');
 
-/**
- * Creates or updates a reference item (e.g., location, category) in Webflow.
- */
-async function upsertReferenceItem({
-  cache,
-  collectionId,
-  crmIdFieldSlug,
-  crmId,
-  name,
-  additionalFields = {},
-}) {
+async function upsertReferenceItem({ cache, collectionId, crmIdFieldSlug, crmId, name, additionalFields = {} }) {
   if (!crmId) return null;
-
-  const fieldData = {
-    name,
-    slug: slugify(name),
-    [crmIdFieldSlug]: crmId,
-    ...additionalFields,
-  };
-
+  const fieldData = { name, slug: slugify(name), [crmIdFieldSlug]: crmId, ...additionalFields };
   if (cache.has(crmId)) {
     const webflowId = cache.get(crmId);
-    await callWebflowApi(
-      'PATCH',
-      `/collections/${collectionId}/items/${webflowId}`,
-      { fieldData },
-    );
+    await callWebflowApi('PATCH', `/collections/${collectionId}/items/${webflowId}`, { fieldData });
     await publishItem(collectionId, webflowId);
     return webflowId;
   }
-
   console.log(`   ↳ Creating new reference item: “${name}” (${crmId})`);
-  const { id } = await callWebflowApi('POST', `/collections/${collectionId}/items`, {
-    isArchived: false,
-    isDraft: false,
-    fieldData,
-  });
+  const { id } = await callWebflowApi('POST', `/collections/${collectionId}/items`, { isArchived: false, isDraft: false, fieldData });
   cache.set(crmId, id);
   await publishItem(collectionId, id);
   return id;
 }
 
-// --- END: MISSING HELPER FUNCTIONS -----------------------------------------
+// 🔽 NEW HELPER FOR DELETION 🔽
+async function deleteWebflowItem(collectionId, itemId) {
+  await callWebflowApi('DELETE', `/collections/${collectionId}/items/${itemId}`);
+}
 
 
-// --- Main sync for a SINGLE EVENT ------------------------------------------
+// --- Main Sync Logic -------------------------------------------------------
+
 /**
- * Syncs a single CRM event to Webflow based on its ID.
+ * Syncs a single CRM event to Webflow based on its ID and the change type.
  * @param {string} eventId The CRM GUID of the event to sync.
+ * @param {string} [changeType='Update'] The type of change (Create, Update, Delete).
  */
-async function syncSingleEvent(eventId) {
-    // ... This function remains the same as in the previous answer ...
-    // ... No changes are needed inside syncSingleEvent itself.
+async function syncSingleEvent(eventId, changeType = 'Update') {
   if (!eventId) {
     console.error('❌ Sync aborted: No Event ID was provided.');
     return;
   }
-  console.log(`🔄 Single Event Sync started for ID: ${eventId}`);
 
   try {
+    console.log(`🔄 Single Event Sync started for ID: ${eventId} (Type: ${changeType})`);
+
     const requiredEnvVars = {
       WEBFLOW_API_TOKEN: process.env.WEBFLOW_API_TOKEN,
       WEBFLOW_COLLECTION_ID_EVENTS: process.env.WEBFLOW_COLLECTION_ID_EVENTS,
@@ -187,20 +126,38 @@ async function syncSingleEvent(eventId) {
       CRM_CLIENT_SECRET: process.env.CRM_CLIENT_SECRET,
       CRM_BASE_URL: process.env.CRM_BASE_URL,
     };
-
     const missingVars = Object.keys(requiredEnvVars).filter(key => !requiredEnvVars[key]);
-    if (missingVars.length > 0) {
-      throw new Error(`Missing required environment variables: ${missingVars.join(', ')}`);
+    if (missingVars.length > 0) throw new Error(`Missing env variables: ${missingVars.join(', ')}`);
+    
+    const COLLECTION_IDS = {
+        EVENTS: requiredEnvVars.WEBFLOW_COLLECTION_ID_EVENTS,
+        LOCATIONS: requiredEnvVars.WEBFLOW_COLLECTION_ID_LOCATIONS,
+        CATEGORIES: requiredEnvVars.WEBFLOW_COLLECTION_ID_CATEGORIES,
+        AIRPORTS: requiredEnvVars.WEBFLOW_COLLECTION_ID_AIRPORTS,
+    };
+
+    // --- Branch logic based on changeType ---
+
+    if (changeType === 'Delete') {
+      console.log(`   [1/1] Processing DELETE request for event ${eventId}`);
+      const webflowEvents = await fetchAllWebflowItemsPaginated(COLLECTION_IDS.EVENTS);
+      const eventCache = new Map(webflowEvents.map(i => [i.fieldData.eventid, i.id]));
+
+      if (eventCache.has(eventId)) {
+        const webflowId = eventCache.get(eventId);
+        console.log(`   → Found matching item in Webflow (ID: ${webflowId}). Deleting...`);
+        await deleteWebflowItem(COLLECTION_IDS.EVENTS, webflowId);
+        console.log('   ✓ Item successfully deleted from Webflow.');
+      } else {
+        console.warn(`   ⚠️ Could not find an item in Webflow with CRM ID ${eventId} to delete. No action taken.`);
+      }
+      console.log(`\n✅  Delete operation complete for ${eventId}.`);
+      return;
     }
 
-    const COLLECTION_IDS = {
-      EVENTS: requiredEnvVars.WEBFLOW_COLLECTION_ID_EVENTS,
-      LOCATIONS: requiredEnvVars.WEBFLOW_COLLECTION_ID_LOCATIONS,
-      CATEGORIES: requiredEnvVars.WEBFLOW_COLLECTION_ID_CATEGORIES,
-      AIRPORTS: requiredEnvVars.WEBFLOW_COLLECTION_ID_AIRPORTS,
-    };
-    
-    console.log('[1/3] Fetching Webflow reference collections (Locations, Categories, Airports)...');
+    // --- Logic for 'Create' and 'Update' ---
+
+    console.log('[1/3] Fetching Webflow reference collections...');
     const [webflowLocations, webflowCategories, webflowAirports] = await Promise.all([
         fetchAllWebflowItemsPaginated(COLLECTION_IDS.LOCATIONS),
         fetchAllWebflowItemsPaginated(COLLECTION_IDS.CATEGORIES),
@@ -213,7 +170,7 @@ async function syncSingleEvent(eventId) {
     const crmEvents = crmEventsRes?.value ?? [];
 
     if (!crmEvents.length) {
-        console.warn(`⚠️ No event found in CRM with ID ${eventId}. It might be inactive or deleted. Sync for this ID will stop.`);
+        console.warn(`⚠️ No event found in CRM with ID ${eventId}. It might be inactive. Sync for this ID will stop.`);
         return;
     }
     const ev = crmEvents[0];
@@ -227,60 +184,29 @@ async function syncSingleEvent(eventId) {
     const webflowEvents = await fetchAllWebflowItemsPaginated(COLLECTION_IDS.EVENTS);
     const eventCache = new Map(webflowEvents.map(i => [i.fieldData.eventid, i.id]));
 
-    const locationId = ev.m8_eventlocation ? await upsertReferenceItem({
-        cache: locationCache,
-        collectionId: COLLECTION_IDS.LOCATIONS,
-        crmIdFieldSlug: 'eventlocationid',
-        crmId: ev.m8_eventlocation.m8_eventlocationid,
-        name: ev.m8_eventlocation.m8_name,
-        additionalFields: {
-          address1city: ev.m8_eventlocation.m8_address1city,
-          address1country: ev.m8_eventlocation.m8_address1country,
-        },
-      }) : null;
+    const locationId = ev.m8_eventlocation ? await upsertReferenceItem({ cache: locationCache, collectionId: COLLECTION_IDS.LOCATIONS, crmIdFieldSlug: 'eventlocationid', crmId: ev.m8_eventlocation.m8_eventlocationid, name: ev.m8_eventlocation.m8_name, additionalFields: { address1city: ev.m8_eventlocation.m8_address1city, address1country: ev.m8_eventlocation.m8_address1country } }) : null;
+    const categoryIds = await Promise.all((ev.m8_eventcategories || []).map(cat => upsertReferenceItem({ cache: categoryCache, collectionId: COLLECTION_IDS.CATEGORIES, crmIdFieldSlug: 'category-id', crmId: cat.m8_eventcategoryid, name: cat.m8_name })));
+    const airportIds = await Promise.all((ev.m8_airports || []).map(air => upsertReferenceItem({ cache: airportCache, collectionId: COLLECTION_IDS.AIRPORTS, crmIdFieldSlug: 'airportid', crmId: air.m8_airportid, name: air.m8_name, additionalFields: { iataairport: air.m8_iataairport, iataairportcode: air.m8_iataairportcode, note: air.m8_note, address1city: air.m8_address1city, address1country: air.m8_address1country } })));
 
-      const categoryIds = await Promise.all((ev.m8_eventcategories || []).map(cat => upsertReferenceItem({
-        cache: categoryCache,
-        collectionId: COLLECTION_IDS.CATEGORIES,
-        crmIdFieldSlug: 'category-id',
-        crmId: cat.m8_eventcategoryid,
-        name: cat.m8_name,
-      })));
-      
-      const airportIds = await Promise.all((ev.m8_airports || []).map(air => upsertReferenceItem({
-        cache: airportCache,
-        collectionId: COLLECTION_IDS.AIRPORTS,
-        crmIdFieldSlug: 'airportid',
-        crmId: air.m8_airportid,
-        name: air.m8_name,
-        additionalFields: {
-          iataairport: air.m8_iataairport,
-          iataairportcode: air.m8_iataairportcode,
-          note: air.m8_note,
-          address1city: air.m8_address1city,
-          address1country: air.m8_address1country,
-        },
-      })));
-
-      const fieldData = {
-        name: ev.m8_name,
-        slug: slugify(ev.m8_name),
-        eventid: ev.m8_eventid,
-        startdate: ev.m8_startdate,
-        enddate: ev.m8_enddate,
-        startingamount: ev.m8_startingamount,
-        drivingdays: ev.m8_drivingdays,
-        eventbookingstatuscode: ev.m8_eventbookingstatuscode,
-        isflightincluded: ev.m8_isflightincluded,
-        iseventpublished: ev.m8_iseventpublished,
-        isaccommodationandcateringincluded: ev.m8_isaccommodationandcateringincluded,
-        isfullybooked: ev.m8_isfullybooked,
-        isfullybookedboleantext: ev.m8_isfullybooked ? 'true' : 'false',
-        availablevehicles: ev.m8_availablevehicles,
-        categorie: categoryIds.filter(Boolean),
-        airport:   airportIds.filter(Boolean),
-        location:  locationId ? [locationId] : [],
-      };
+    const fieldData = {
+      name: ev.m8_name,
+      slug: slugify(ev.m8_name),
+      eventid: ev.m8_eventid,
+      startdate: ev.m8_startdate,
+      enddate: ev.m8_enddate,
+      startingamount: ev.m8_startingamount,
+      drivingdays: ev.m8_drivingdays,
+      eventbookingstatuscode: ev.m8_eventbookingstatuscode,
+      isflightincluded: ev.m8_isflightincluded,
+      iseventpublished: ev.m8_iseventpublished,
+      isaccommodationandcateringincluded: ev.m8_isaccommodationandcateringincluded,
+      isfullybooked: ev.m8_isfullybooked,
+      isfullybookedboleantext: ev.m8_isfullybooked ? 'true' : 'false',
+      availablevehicles: ev.m8_availablevehicles,
+      categorie: categoryIds.filter(Boolean),
+      airport:   airportIds.filter(Boolean),
+      location:  locationId ? [locationId] : [],
+    };
 
     if (eventCache.has(ev.m8_eventid)) {
       const webflowId = eventCache.get(ev.m8_eventid);
@@ -295,26 +221,23 @@ async function syncSingleEvent(eventId) {
       console.log('   ✓ Created & published successfully.');
     }
 
-    console.log(`\n✅  Single event sync complete for ${eventId}.`);
+    console.log(`\n✅  ${changeType} operation complete for ${eventId}.`);
 
   } catch (error) {
-    console.error(`\n❌ A critical error occurred during the single sync for event ${eventId}.`);
+    console.error(`\n❌ A critical error occurred during the sync for event ${eventId} (Type: ${changeType}).`);
     throw error;
   }
 }
 
-// Export the function for the webhook to use
+// Export and allow running directly from command line for testing
 module.exports = syncSingleEvent;
 
-// Allow running the script directly from the command line for testing
 if (require.main === module) {
-  const testEventId = process.argv[2]; 
-  if (!testEventId) {
-    console.error('Please provide an event ID to test. Usage: node scripts/sync_single.js <event-id>');
+  const eventId = process.argv[2];
+  const changeType = process.argv[3] || 'Update'; // Can be Create, Update, or Delete
+  if (!eventId) {
+    console.error('Usage: node scripts/sync_single.js <event-id> [Create|Update|Delete]');
     process.exit(1);
   }
-  syncSingleEvent(testEventId).catch(err => {
-    console.error('\n❌  Sync script failed to run directly.');
-    process.exit(1);
-  });
+  syncSingleEvent(eventId, changeType).catch(() => process.exit(1));
 }
