@@ -1,10 +1,10 @@
-// api/crm-webhook.js  (Serverless Function for Vercel)
-// Updated to use waitUntil for reliable background execution on Vercel Pro
+// api/crm-webhook.js (Serverless Function for Vercel)
+// Updated to trigger a targeted sync based on the webhook payload.
 
 require('dotenv').config();
 const jwt = require('jsonwebtoken');
-const { waitUntil } = require('@vercel/functions'); // ⬅️ IMPORT waitUntil
-const syncFull = require('../scripts/sync_full');     // ⬅️ Adjust the path if needed
+const { waitUntil } = require('@vercel/functions');
+const syncSingleEvent = require('../scripts/sync_single'); // ⬅️ IMPORT the new single sync function
 
 module.exports = async (req, res) => {
   // 1. Validate HTTP Method
@@ -26,43 +26,47 @@ module.exports = async (req, res) => {
   }
 
   try {
-    // 3. Verify the JWT Signature
+    // 3. Verify the JWT and extract payload
     const token = auth.split(' ')[1];
     const payload = jwt.verify(token, secret);
 
-    // 4. Validate the Payload Content
+    // 4. Validate the Payload Content (entityName and recordId are crucial)
     const requiredFields = ['entityName', 'recordId', 'changeType'];
     const missingFields = requiredFields.filter(field => !payload[field]);
 
     if (missingFields.length > 0) {
       console.warn(`Webhook rejected due to missing fields: ${missingFields.join(', ')}`);
       return res.status(400).json({
-        message: `Bad Request: Payload missing required fields.`,
+        message: 'Bad Request: Payload missing required fields.',
         missing: missingFields,
       });
     }
 
     // 5. If valid, accept the webhook and start the background task
     console.log('✅ CRM webhook accepted:', payload);
+    
+    // We only care about the 'Event' entity for now
+    if (payload.entityName !== 'Event') {
+        console.log(`  -> Ignoring webhook for entity '${payload.entityName}'. No action taken.`);
+        return res.status(200).json({ message: 'Webhook received but not applicable to this endpoint.'});
+    }
 
     /*
-     * ✅ Use waitUntil() to allow the sync process to run reliably in the
-     * background after the response has been sent. This is the correct
-     * approach for long-running tasks on Vercel Pro.
+     * ✅ Use waitUntil() to trigger the targeted sync for the specific recordId.
+     * This is far more efficient than a full sync.
      */
     waitUntil(
-      syncFull()
-        .then(() => console.log('✔︎ Full CRM → Webflow sync finished successfully.'))
-        .catch(err => console.error('❌ A critical error occurred during the background sync:', err))
+      syncSingleEvent(payload.recordId) // ⬅️ CALL the new function with the recordId
+        .then(() => console.log(`✔︎ Single event sync for ${payload.recordId} finished successfully.`))
+        .catch(err => console.error(`❌ A critical error occurred during the background sync for ${payload.recordId}:`, err))
     );
 
-    // 6. Respond immediately to the sender. The sync now runs in the background.
+    // 6. Respond immediately to the sender.
     return res.status(202).json({
-      message: 'Sync triggered successfully and is running in the background.'
+      message: 'Targeted sync triggered successfully and is running in the background.'
     });
 
   } catch (err) {
-    // This block catches errors from jwt.verify(), like an invalid signature.
     console.error('JWT verification error:', err.message);
     return res.status(401).send('Unauthorized: Invalid token.');
   }
