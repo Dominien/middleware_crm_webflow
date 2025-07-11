@@ -1,17 +1,17 @@
 /**
- * sync_single.js – v2.0 (11 Jul 2025)
+ * sync_single.js – v2.1 (11 Jul 2025)
  * One-way, single-item sync from Dynamics CRM → Webflow CMS
- * - Handles Create, Update, and Delete operations based on webhook payload.
- * - This script is triggered by api/crm-webhook.js.
+ * - FIX: Prevents sending a body on GET requests to avoid 400 errors from Webflow.
  */
 
 require('dotenv').config();
 const { getEvents } = require('../lib/crm');
 const axios = require('axios');
 
-// --- Helpers (Copied from sync_full.js) ------------------------------------
+// --- Helper Functions ------------------------------------------------------
 const webflowApiBase = 'https://api.webflow.com/v2';
 
+// 🔽 THIS FUNCTION CONTAINS THE FIX 🔽
 async function callWebflowApi(method, endpoint, body = null) {
   const WEBFLOW_API_TOKEN = process.env.WEBFLOW_API_TOKEN;
   const fullUrl = `${webflowApiBase}${endpoint}`;
@@ -26,8 +26,14 @@ async function callWebflowApi(method, endpoint, body = null) {
       'Content-Type': 'application/json',
     },
     timeout,
-    data: body,
+    // The 'data' property is now set conditionally below
   };
+
+  // ✅ FIX: Only add a 'data' property if a body exists.
+  // This prevents sending a body on GET requests.
+  if (body) {
+    options.data = body;
+  }
 
   const maxRetries = 5;
   let attempt = 0;
@@ -56,19 +62,19 @@ async function callWebflowApi(method, endpoint, body = null) {
 }
 
 async function fetchAllWebflowItemsPaginated(collectionId) {
-    let allItems = [];
-    let offset = 0;
-    const limit = 100;
-    let hasMore = true;
-    while(hasMore) {
-        const response = await callWebflowApi('GET', `/collections/${collectionId}/items?limit=${limit}&offset=${offset}`);
-        if (response?.items?.length > 0) {
-            allItems = allItems.concat(response.items);
-            offset += response.items.length;
-        }
-        hasMore = response?.pagination && (offset < response.pagination.total);
+  let allItems = [];
+  let offset = 0;
+  const limit = 100;
+  let hasMore = true;
+  while (hasMore) {
+    const response = await callWebflowApi('GET', `/collections/${collectionId}/items?limit=${limit}&offset=${offset}`);
+    if (response?.items?.length > 0) {
+      allItems = allItems.concat(response.items);
+      offset += response.items.length;
     }
-    return allItems;
+    hasMore = response?.pagination && (offset < response.pagination.total);
+  }
+  return allItems;
 }
 
 async function publishItem(collectionId, itemId) {
@@ -93,19 +99,14 @@ async function upsertReferenceItem({ cache, collectionId, crmIdFieldSlug, crmId,
   return id;
 }
 
-// 🔽 NEW HELPER FOR DELETION 🔽
 async function deleteWebflowItem(collectionId, itemId) {
+  // NOTE: A DELETE request in Axios *can* have a body, so our fix in callWebflowApi is safe.
+  // We aren't sending one here, but the function handles it correctly if needed.
   await callWebflowApi('DELETE', `/collections/${collectionId}/items/${itemId}`);
 }
 
-
 // --- Main Sync Logic -------------------------------------------------------
 
-/**
- * Syncs a single CRM event to Webflow based on its ID and the change type.
- * @param {string} eventId The CRM GUID of the event to sync.
- * @param {string} [changeType='Update'] The type of change (Create, Update, Delete).
- */
 async function syncSingleEvent(eventId, changeType = 'Update') {
   if (!eventId) {
     console.error('❌ Sync aborted: No Event ID was provided.');
@@ -128,15 +129,12 @@ async function syncSingleEvent(eventId, changeType = 'Update') {
     };
     const missingVars = Object.keys(requiredEnvVars).filter(key => !requiredEnvVars[key]);
     if (missingVars.length > 0) throw new Error(`Missing env variables: ${missingVars.join(', ')}`);
-    
     const COLLECTION_IDS = {
         EVENTS: requiredEnvVars.WEBFLOW_COLLECTION_ID_EVENTS,
         LOCATIONS: requiredEnvVars.WEBFLOW_COLLECTION_ID_LOCATIONS,
         CATEGORIES: requiredEnvVars.WEBFLOW_COLLECTION_ID_CATEGORIES,
         AIRPORTS: requiredEnvVars.WEBFLOW_COLLECTION_ID_AIRPORTS,
     };
-
-    // --- Branch logic based on changeType ---
 
     if (changeType === 'Delete') {
       console.log(`   [1/1] Processing DELETE request for event ${eventId}`);
@@ -149,13 +147,10 @@ async function syncSingleEvent(eventId, changeType = 'Update') {
         await deleteWebflowItem(COLLECTION_IDS.EVENTS, webflowId);
         console.log('   ✓ Item successfully deleted from Webflow.');
       } else {
-        console.warn(`   ⚠️ Could not find an item in Webflow with CRM ID ${eventId} to delete. No action taken.`);
+        console.warn(`   ⚠️ Could not find item in Webflow with CRM ID ${eventId} to delete. No action taken.`);
       }
-      console.log(`\n✅  Delete operation complete for ${eventId}.`);
       return;
     }
-
-    // --- Logic for 'Create' and 'Update' ---
 
     console.log('[1/3] Fetching Webflow reference collections...');
     const [webflowLocations, webflowCategories, webflowAirports] = await Promise.all([
@@ -164,14 +159,14 @@ async function syncSingleEvent(eventId, changeType = 'Update') {
         fetchAllWebflowItemsPaginated(COLLECTION_IDS.AIRPORTS)
     ]);
     console.log('   ✓ Caches for reference collections are ready.');
-    
+
     console.log(`   [2/3] Fetching event ${eventId} from CRM...`);
     const crmEventsRes = await getEvents({ entityids: [eventId] });
     const crmEvents = crmEventsRes?.value ?? [];
 
     if (!crmEvents.length) {
-        console.warn(`⚠️ No event found in CRM with ID ${eventId}. It might be inactive. Sync for this ID will stop.`);
-        return;
+      console.warn(`⚠️ No event found in CRM with ID ${eventId}. It might be inactive. Sync will stop.`);
+      return;
     }
     const ev = crmEvents[0];
     console.log(`   ✓ Found CRM Event: "${ev.m8_name}"`);
@@ -179,8 +174,7 @@ async function syncSingleEvent(eventId, changeType = 'Update') {
     console.log('   [3/3] Processing and upserting event to Webflow...');
     const locationCache = new Map(webflowLocations.map(i => [i.fieldData.eventlocationid, i.id]));
     const categoryCache = new Map(webflowCategories.map(i => [i.fieldData['category-id'], i.id]));
-    const airportCache  = new Map(webflowAirports.map(i => [i.fieldData.airportid, i.id]));
-
+    const airportCache = new Map(webflowAirports.map(i => [i.fieldData.airportid, i.id]));
     const webflowEvents = await fetchAllWebflowItemsPaginated(COLLECTION_IDS.EVENTS);
     const eventCache = new Map(webflowEvents.map(i => [i.fieldData.eventid, i.id]));
 
@@ -188,25 +182,7 @@ async function syncSingleEvent(eventId, changeType = 'Update') {
     const categoryIds = await Promise.all((ev.m8_eventcategories || []).map(cat => upsertReferenceItem({ cache: categoryCache, collectionId: COLLECTION_IDS.CATEGORIES, crmIdFieldSlug: 'category-id', crmId: cat.m8_eventcategoryid, name: cat.m8_name })));
     const airportIds = await Promise.all((ev.m8_airports || []).map(air => upsertReferenceItem({ cache: airportCache, collectionId: COLLECTION_IDS.AIRPORTS, crmIdFieldSlug: 'airportid', crmId: air.m8_airportid, name: air.m8_name, additionalFields: { iataairport: air.m8_iataairport, iataairportcode: air.m8_iataairportcode, note: air.m8_note, address1city: air.m8_address1city, address1country: air.m8_address1country } })));
 
-    const fieldData = {
-      name: ev.m8_name,
-      slug: slugify(ev.m8_name),
-      eventid: ev.m8_eventid,
-      startdate: ev.m8_startdate,
-      enddate: ev.m8_enddate,
-      startingamount: ev.m8_startingamount,
-      drivingdays: ev.m8_drivingdays,
-      eventbookingstatuscode: ev.m8_eventbookingstatuscode,
-      isflightincluded: ev.m8_isflightincluded,
-      iseventpublished: ev.m8_iseventpublished,
-      isaccommodationandcateringincluded: ev.m8_isaccommodationandcateringincluded,
-      isfullybooked: ev.m8_isfullybooked,
-      isfullybookedboleantext: ev.m8_isfullybooked ? 'true' : 'false',
-      availablevehicles: ev.m8_availablevehicles,
-      categorie: categoryIds.filter(Boolean),
-      airport:   airportIds.filter(Boolean),
-      location:  locationId ? [locationId] : [],
-    };
+    const fieldData = { name: ev.m8_name, slug: slugify(ev.m8_name), eventid: ev.m8_eventid, startdate: ev.m8_startdate, enddate: ev.m8_enddate, startingamount: ev.m8_startingamount, drivingdays: ev.m8_drivingdays, eventbookingstatuscode: ev.m8_eventbookingstatuscode, isflightincluded: ev.m8_isflightincluded, iseventpublished: ev.m8_iseventpublished, isaccommodationandcateringincluded: ev.m8_isaccommodationandcateringincluded, isfullybooked: ev.m8_isfullybooked, isfullybookedboleantext: ev.m8_isfullybooked ? 'true' : 'false', availablevehicles: ev.m8_availablevehicles, categorie: categoryIds.filter(Boolean), airport: airportIds.filter(Boolean), location: locationId ? [locationId] : [], };
 
     if (eventCache.has(ev.m8_eventid)) {
       const webflowId = eventCache.get(ev.m8_eventid);
@@ -221,20 +197,19 @@ async function syncSingleEvent(eventId, changeType = 'Update') {
       console.log('   ✓ Created & published successfully.');
     }
 
-    console.log(`\n✅  ${changeType} operation complete for ${eventId}.`);
-
   } catch (error) {
     console.error(`\n❌ A critical error occurred during the sync for event ${eventId} (Type: ${changeType}).`);
     throw error;
+  } finally {
+    console.log(`\n✅  Sync operation complete for ${eventId}.`);
   }
 }
 
-// Export and allow running directly from command line for testing
 module.exports = syncSingleEvent;
 
 if (require.main === module) {
   const eventId = process.argv[2];
-  const changeType = process.argv[3] || 'Update'; // Can be Create, Update, or Delete
+  const changeType = process.argv[3] || 'Update';
   if (!eventId) {
     console.error('Usage: node scripts/sync_single.js <event-id> [Create|Update|Delete]');
     process.exit(1);
