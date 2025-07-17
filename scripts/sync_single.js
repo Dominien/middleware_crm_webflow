@@ -1,9 +1,10 @@
 /**
- * sync_single.js – v2.6 (17 Jul 2025)
+ * sync_single.js – v2.7 (17 Jul 2025)
  * One-way, single-item sync from Dynamics CRM → Webflow CMS
- * - FIXED: A critical logic error where the script failed to parse the nested CRM response.
- * The event array is now correctly accessed via `response.singleEvent.value`.
- * - ADDED: Enhanced logging to output the raw CRM response structure for easier debugging.
+ * - FIXED: The root cause of the sync failure. The script now handles the fact that the CRM
+ * returns a list of ALL published events, by filtering this list for the specific event ID
+ * being synced. This ensures published events are updated and unpublished events are archived.
+ * - ADDED: More specific logging to show the total events returned and the result of the filtering step.
  */
 
 require('dotenv').config();
@@ -151,17 +152,16 @@ async function syncSingleEvent(eventId, changeType = 'Update') {
     console.log(`[3/3] Fetching event ${eventId} from CRM and processing...`);
     const crmEventsRes = await getEvents({ entityids: [eventId] });
     
-    // --- ADDED: Enhanced Logging ---
-    // Log the received data structure to help with debugging.
-    console.log('    ↳ Raw CRM Response:', JSON.stringify(crmEventsRes, null, 2));
+    // --- FIX: CRM returns a list of ALL published events. We must filter it for the specific event ID. ---
+    const allPublishedEvents = crmEventsRes?.value ?? [];
+    console.log(`    ↳ CRM returned a list of ${allPublishedEvents.length} total published event(s).`);
 
-    // --- FIX: Correctly access the nested 'value' array inside 'singleEvent' ---
-    const crmEvents = crmEventsRes?.singleEvent?.value ?? [];
-    console.log(`    ↳ Extracted ${crmEvents.length} event(s) from CRM response.`);
+    const crmEvents = allPublishedEvents.filter(event => event.m8_eventid === eventId);
+    console.log(`    ↳ Found ${crmEvents.length} matching event(s) for ID ${eventId}.`);
 
-    // If the extracted array is empty, the event is unpublished. We should archive it in Webflow.
+    // If the filtered array is empty, the specific event is not published. Archive it.
     if (!crmEvents.length) {
-      console.log(`    → Decision: CRM returned no data for event ${eventId}. This means it is unpublished.`);
+      console.log(`    → Decision: Event ID ${eventId} was not found in the list of published events. Archiving...`);
       if (eventCache.has(eventId)) {
         const webflowId = eventCache.get(eventId);
         console.log(`    → Found Webflow item ${webflowId}. Archiving...`);
@@ -170,12 +170,12 @@ async function syncSingleEvent(eventId, changeType = 'Update') {
         });
         console.log('    ✓ Item successfully archived (unpublished).');
       } else {
-        console.warn(`    ⚠️ CRM event is unpublished, but no matching item found in Webflow to archive for ID ${eventId}. No action taken.`);
+        console.warn(`    ⚠️ Event is unpublished, but no matching item found in Webflow to archive for ID ${eventId}. No action taken.`);
       }
-      return; // The sync action (archiving) is complete.
+      return;
     }
 
-    // If we reach here, the event exists in CRM and should be published in Webflow.
+    // If we reach here, the event was found in the published list and should be created/updated.
     const ev = crmEvents[0];
     console.log(`    ✓ Found CRM Event: "${ev.m8_name}"`);
     console.log(`    → Decision: Event data found in CRM. It will be created/updated and published in Webflow.`);
