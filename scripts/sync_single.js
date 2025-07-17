@@ -1,11 +1,9 @@
 /**
- * sync_single.js – v2.5 (17 Jul 2025)
+ * sync_single.js – v2.6 (17 Jul 2025)
  * One-way, single-item sync from Dynamics CRM → Webflow CMS
- * - REVISED: Logic to handle unpublishing. An empty response from the CRM for an event ID
- * now correctly triggers archiving in Webflow, replacing the faulty 'iseventpublished' boolean check.
- * - FIXED: Removed incorrect text from log messages.
- * - FIXED: A critical typo that caused the archiving (unpublishing) step to fail.
- * - ADDED: More detailed logging to show the incoming CRM 'published' status and the logic path taken.
+ * - FIXED: A critical logic error where the script failed to parse the nested CRM response.
+ * The event array is now correctly accessed via `response.singleEvent.value`.
+ * - ADDED: Enhanced logging to output the raw CRM response structure for easier debugging.
  */
 
 require('dotenv').config();
@@ -152,10 +150,16 @@ async function syncSingleEvent(eventId, changeType = 'Update') {
 
     console.log(`[3/3] Fetching event ${eventId} from CRM and processing...`);
     const crmEventsRes = await getEvents({ entityids: [eventId] });
-    const crmEvents = crmEventsRes?.value ?? [];
+    
+    // --- ADDED: Enhanced Logging ---
+    // Log the received data structure to help with debugging.
+    console.log('    ↳ Raw CRM Response:', JSON.stringify(crmEventsRes, null, 2));
 
-    // --- LOGIC CHANGE ---
-    // If the CRM returns an empty array, it means the event is unpublished. We should archive it in Webflow.
+    // --- FIX: Correctly access the nested 'value' array inside 'singleEvent' ---
+    const crmEvents = crmEventsRes?.singleEvent?.value ?? [];
+    console.log(`    ↳ Extracted ${crmEvents.length} event(s) from CRM response.`);
+
+    // If the extracted array is empty, the event is unpublished. We should archive it in Webflow.
     if (!crmEvents.length) {
       console.log(`    → Decision: CRM returned no data for event ${eventId}. This means it is unpublished.`);
       if (eventCache.has(eventId)) {
@@ -186,7 +190,7 @@ async function syncSingleEvent(eventId, changeType = 'Update') {
 
     const fieldData = { name: ev.m8_name, slug: slugify(ev.m8_name), eventid: ev.m8_eventid, startdate: ev.m8_startdate, enddate: ev.m8_enddate, startingamount: ev.m8_startingamount, drivingdays: ev.m8_drivingdays, eventbookingstatuscode: ev.m8_eventbookingstatuscode, isflightincluded: ev.m8_isflightincluded, iseventpublished: ev.m8_iseventpublished, isaccommodationandcateringincluded: ev.m8_isaccommodationandcateringincluded, isfullybooked: ev.m8_isfullybooked, isfullybookedboleantext: ev.m8_isfullybooked ? 'true' : 'false', availablevehicles: ev.m8_availablevehicles, categorie: categoryIds.filter(Boolean), airport: airportIds.filter(Boolean), location: locationId ? [locationId] : [], };
 
-    // Since we are in the "publish" branch, we just create or update and ensure it's published.
+    // Create or update the item in Webflow and ensure it is published.
     if (eventCache.has(ev.m8_eventid)) {
       const webflowId = eventCache.get(ev.m8_eventid);
       console.log(`    → Updating and publishing item ${webflowId}...`);
