@@ -2,8 +2,13 @@
 import cors from 'cors';
 import { submitSalesOrder } from '../lib/crm.js';
 
+// --- Updated CORS Configuration ---
 const corsHandler = cors({
-  origin: 'https://k108---esc-european-speed-club.webflow.io',
+  origin: [
+    'https://k108---esc-european-speed-club.webflow.io', // Existing domain
+    'https://www.european-speed-club.com',              // New domain
+    'https://european-speed-club.com'                   // New domain
+  ],
   methods: ['POST', 'OPTIONS'],
   optionsSuccessStatus: 200,
 });

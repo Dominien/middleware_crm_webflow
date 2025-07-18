@@ -6,9 +6,13 @@ import cors from 'cors';
 // Import your CRM logic
 import { getEventPriceLevel } from '../lib/crm.js'; // Using ESM import
 
-// Initialize CORS middleware
+// Initialize CORS middleware with multiple origins
 const corsHandler = cors({
-  origin: 'https://k108---esc-european-speed-club.webflow.io',
+  origin: [
+    'https://k108---esc-european-speed-club.webflow.io', // Existing domain
+    'https://www.european-speed-club.com',              // New domain
+    'https://european-speed-club.com'                   // New domain
+  ],
   optionsSuccessStatus: 200
 });
 
