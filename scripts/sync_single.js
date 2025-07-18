@@ -1,16 +1,17 @@
 /**
- * sync_single.js – v2.8 (18 Jul 2025)
+ * sync_single.js – v2.9 (18 Jul 2025)
  * One-way, single-item sync from Dynamics CRM → Webflow CMS
+ * - FIXED: Correctly unpublishes items using the `DELETE .../items/:id/live` endpoint, which also sets the item to draft.
  * - MODIFIED: Unpublished events are now set to a draft state instead of being archived.
  * - FIXED: The root cause of the sync failure. The script now handles the fact that the CRM
  * returns a list of ALL published events, by filtering this list for the specific event ID
- * being synced. This ensures published events are updated and unpublished events are set to draft.
+ * being synced.
  * - ADDED: More specific logging to show the total events returned and the result of the filtering step.
  */
 
 require('dotenv').config();
 const { getEvents } = require('../lib/crm');
-const axios = require('axios');
+const axios =require('axios');
 
 // --- Helper Functions ------------------------------------------------------
 const webflowApiBase = 'https://api.webflow.com/v2';
@@ -153,25 +154,27 @@ async function syncSingleEvent(eventId, changeType = 'Update') {
     console.log(`[3/3] Fetching event ${eventId} from CRM and processing...`);
     const crmEventsRes = await getEvents({ entityids: [eventId] });
     
-    // --- FIX: CRM returns a list of ALL published events. We must filter it for the specific event ID. ---
     const allPublishedEvents = crmEventsRes?.value ?? [];
     console.log(`    ↳ CRM returned a list of ${allPublishedEvents.length} total published event(s).`);
 
     const crmEvents = allPublishedEvents.filter(event => event.m8_eventid === eventId);
     console.log(`    ↳ Found ${crmEvents.length} matching event(s) for ID ${eventId}.`);
 
-    // If the filtered array is empty, the specific event is not published. Set it to draft.
+    // If the filtered array is empty, the specific event is not published. Unpublish it and set to draft.
     if (!crmEvents.length) {
-      console.log(`    → Decision: Event ID ${eventId} was not found in the list of published events. Moving to drafts...`);
+      console.log(`    → Decision: Event ID ${eventId} was not found in the list of published events. Unpublishing...`);
       if (eventCache.has(eventId)) {
         const webflowId = eventCache.get(eventId);
-        console.log(`    → Found Webflow item ${webflowId}. Setting to draft...`);
-        await callWebflowApi('PATCH', `/collections/${COLLECTION_IDS.EVENTS}/items/${webflowId}`, {
-          isDraft: true
-        });
-        console.log('    ✓ Item successfully moved to drafts.');
+        console.log(`    → Found Webflow item ${webflowId}. Unpublishing via DELETE .../live endpoint...`);
+
+        // This endpoint unpublishes the item AND sets it to draft.
+        const endpoint = `/collections/${COLLECTION_IDS.EVENTS}/items/${webflowId}/live`;
+        
+        await callWebflowApi('DELETE', endpoint); // No payload needed for this DELETE request.
+
+        console.log('    ✓ Item successfully unpublished and moved to drafts.');
       } else {
-        console.warn(`    ⚠️ Event is unpublished, but no matching item found in Webflow to move to drafts for ID ${eventId}. No action taken.`);
+        console.warn(`    ⚠️ Event is unpublished, but no matching item found in Webflow to unpublish for ID ${eventId}. No action taken.`);
       }
       return;
     }
