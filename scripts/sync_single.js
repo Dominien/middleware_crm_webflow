@@ -1,12 +1,7 @@
 /**
- * sync_single.js – v2.9 (18 Jul 2025)
- * One-way, single-item sync from Dynamics CRM → Webflow CMS
- * - FIXED: Correctly unpublishes items using the `DELETE .../items/:id/live` endpoint, which also sets the item to draft.
- * - MODIFIED: Unpublished events are now set to a draft state instead of being archived.
- * - FIXED: The root cause of the sync failure. The script now handles the fact that the CRM
- * returns a list of ALL published events, by filtering this list for the specific event ID
- * being synced.
- * - ADDED: More specific logging to show the total events returned and the result of the filtering step.
+ * sync_single.js – v3.0 (29 Jul 2025)
+ * - ADDED: Now accepts an `environment` parameter ('Production' or 'Staging') to handle targeted deploys.
+ * - MODIFIED: The CRM `getEvents` call now passes the environment to fetch environment-specific data.
  */
 
 require('dotenv').config();
@@ -106,14 +101,16 @@ async function deleteWebflowItem(collectionId, itemId) {
 
 // --- Main Sync Logic -------------------------------------------------------
 
-async function syncSingleEvent(eventId, changeType = 'Update') {
+// ⬇️ MODIFIED: Function now accepts 'environment'
+async function syncSingleEvent(eventId, changeType = 'Update', environment = 'Production') {
   if (!eventId) {
     console.error('❌ Sync aborted: No Event ID was provided.');
     return;
   }
 
   try {
-    console.log(`🔄 Single Event Sync started for ID: ${eventId} (Type: ${changeType})`);
+    // ⬇️ MODIFIED: Log now includes the environment
+    console.log(`🔄 [${environment}] Single Event Sync started for ID: ${eventId} (Type: ${changeType})`);
 
     const COLLECTION_IDS = {
         EVENTS: process.env.WEBFLOW_COLLECTION_ID_EVENTS,
@@ -151,26 +148,25 @@ async function syncSingleEvent(eventId, changeType = 'Update') {
     const eventCache = new Map(webflowEvents.map(i => [i.fieldData.eventid, i.id]));
     console.log('    ✓ Webflow event cache is ready.');
 
-    console.log(`[3/3] Fetching event ${eventId} from CRM and processing...`);
-    const crmEventsRes = await getEvents({ entityids: [eventId] });
-    
+    console.log(`[3/3] Fetching event ${eventId} from CRM for [${environment}] and processing...`);
+    // ⬇️ MODIFIED: Pass the environment to the CRM library
+    const crmEventsRes = await getEvents({ entityids: [eventId], environment });
+
     const allPublishedEvents = crmEventsRes?.value ?? [];
     console.log(`    ↳ CRM returned a list of ${allPublishedEvents.length} total published event(s).`);
 
     const crmEvents = allPublishedEvents.filter(event => event.m8_eventid === eventId);
     console.log(`    ↳ Found ${crmEvents.length} matching event(s) for ID ${eventId}.`);
 
-    // If the filtered array is empty, the specific event is not published. Unpublish it and set to draft.
     if (!crmEvents.length) {
       console.log(`    → Decision: Event ID ${eventId} was not found in the list of published events. Unpublishing...`);
       if (eventCache.has(eventId)) {
         const webflowId = eventCache.get(eventId);
         console.log(`    → Found Webflow item ${webflowId}. Unpublishing via DELETE .../live endpoint...`);
 
-        // This endpoint unpublishes the item AND sets it to draft.
         const endpoint = `/collections/${COLLECTION_IDS.EVENTS}/items/${webflowId}/live`;
-        
-        await callWebflowApi('DELETE', endpoint); // No payload needed for this DELETE request.
+
+        await callWebflowApi('DELETE', endpoint);
 
         console.log('    ✓ Item successfully unpublished and moved to drafts.');
       } else {
@@ -179,7 +175,6 @@ async function syncSingleEvent(eventId, changeType = 'Update') {
       return;
     }
 
-    // If we reach here, the event was found in the published list and should be created/updated.
     const ev = crmEvents[0];
     console.log(`    ✓ Found CRM Event: "${ev.m8_name}"`);
     console.log(`    → Decision: Event data found in CRM. It will be created/updated and published in Webflow.`);
@@ -194,7 +189,6 @@ async function syncSingleEvent(eventId, changeType = 'Update') {
 
     const fieldData = { name: ev.m8_name, slug: slugify(ev.m8_name), eventid: ev.m8_eventid, startdate: ev.m8_startdate, enddate: ev.m8_enddate, startingamount: ev.m8_startingamount, drivingdays: ev.m8_drivingdays, eventbookingstatuscode: ev.m8_eventbookingstatuscode, isflightincluded: ev.m8_isflightincluded, iseventpublished: ev.m8_iseventpublished, isaccommodationandcateringincluded: ev.m8_isaccommodationandcateringincluded, isfullybooked: ev.m8_isfullybooked, isfullybookedboleantext: ev.m8_isfullybooked ? 'true' : 'false', availablevehicles: ev.m8_availablevehicles, categorie: categoryIds.filter(Boolean), airport: airportIds.filter(Boolean), location: locationId ? [locationId] : [], };
 
-    // Create or update the item in Webflow and ensure it is published.
     if (eventCache.has(ev.m8_eventid)) {
       const webflowId = eventCache.get(ev.m8_eventid);
       console.log(`    → Updating and publishing item ${webflowId}...`);
@@ -213,22 +207,25 @@ async function syncSingleEvent(eventId, changeType = 'Update') {
     }
 
   } catch (error) {
-    console.error(`\n❌ A critical error occurred during the sync for event ${eventId} (Type: ${changeType}).`);
+    console.error(`\n❌ [${environment}] A critical error occurred during the sync for event ${eventId} (Type: ${changeType}).`);
     console.error(`❌ Error Message: ${error.message}`);
     throw error;
   } finally {
-    console.log(`\n✅  Sync operation complete for ${eventId}.`);
+    console.log(`\n✅ [${environment}] Sync operation complete for ${eventId}.`);
   }
 }
 
 module.exports = syncSingleEvent;
 
+// ⬇️ MODIFIED: Updated to accept environment from command line for testing
 if (require.main === module) {
   const eventId = process.argv[2];
   const changeType = process.argv[3] || 'Update';
+  const environment = process.argv[4] || 'Production';
+
   if (!eventId) {
-    console.error('Usage: node scripts/sync_single.js <event-id> [Create|Update|Delete]');
+    console.error('Usage: node scripts/sync_single.js <event-id> [Update|Delete] [Production|Staging]');
     process.exit(1);
   }
-  syncSingleEvent(eventId, changeType).catch(() => process.exit(1));
+  syncSingleEvent(eventId, changeType, environment).catch(() => process.exit(1));
 }

@@ -1,10 +1,10 @@
 // api/crm-webhook.js (Serverless Function for Vercel)
-// v2.0 - Updated to handle targeted syncs for Create, Update, and Delete
+// v3.0 - Updated to handle 'environment' for Production/Staging syncs
 
 require('dotenv').config();
 const jwt = require('jsonwebtoken');
 const { waitUntil } = require('@vercel/functions');
-const syncSingleEvent = require('../scripts/sync_single'); // ⬅️ IMPORTANT: Points to the new script
+const syncSingleEvent = require('../scripts/sync_single');
 
 module.exports = async (req, res) => {
   // 1. Validate HTTP Method
@@ -30,8 +30,8 @@ module.exports = async (req, res) => {
     const token = auth.split(' ')[1];
     const payload = jwt.verify(token, secret);
 
-    // 4. Validate the Payload Content
-    const requiredFields = ['entityName', 'recordId', 'changeType'];
+    // 4. Validate the Payload Content, now including 'environment'
+    const requiredFields = ['entityName', 'recordId', 'changeType', 'environment'];
     const missingFields = requiredFields.filter(field => !payload[field]);
 
     if (missingFields.length > 0) {
@@ -52,19 +52,19 @@ module.exports = async (req, res) => {
     }
 
     /*
-     * ✅ Use waitUntil() to trigger the targeted sync, passing both the
-     * recordId and the changeType for precise action.
+     * ✅ Use waitUntil() to trigger the targeted sync, passing the recordId,
+     * changeType, AND the environment for a precise, targeted action.
      */
     waitUntil(
-      // Pass both the ID and the change type to the sync function
-      syncSingleEvent(payload.recordId, payload.changeType)
-        .then(() => console.log(`✔︎ Sync (${payload.changeType}) for ${payload.recordId} finished successfully.`))
-        .catch(err => console.error(`❌ A critical error occurred during the background sync for ${payload.recordId}:`, err))
+      // Pass all three parameters to the sync function
+      syncSingleEvent(payload.recordId, payload.changeType, payload.environment)
+        .then(() => console.log(`✔︎ Sync (${payload.changeType}) for ${payload.recordId} on [${payload.environment}] finished successfully.`))
+        .catch(err => console.error(`❌ A critical error occurred during the background sync for ${payload.recordId} on [${payload.environment}]:`, err))
     );
 
     // 6. Respond immediately to the sender.
     return res.status(202).json({
-      message: 'Targeted sync triggered successfully and is running in the background.'
+      message: `Targeted sync for [${payload.environment}] triggered successfully and is running in the background.`
     });
 
   } catch (err) {
