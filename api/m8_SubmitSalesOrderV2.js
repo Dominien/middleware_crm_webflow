@@ -5,9 +5,10 @@ import { submitSalesOrder } from '../lib/crm.js';
 // --- Updated CORS Configuration ---
 const corsHandler = cors({
   origin: [
-    'https://k108---esc-european-speed-club.webflow.io', // Existing domain
-    'https://www.european-speed-club.com',              // New domain
-    'https://european-speed-club.com'                   // New domain
+    'https://k108---esc-european-speed-5d15a0ed8a9d2.webflow.io', // New testing domain
+    'https://k108---esc-european-speed-club.webflow.io',
+    'https://www.european-speed-club.com',
+    'https://european-speed-club.com'
   ],
   methods: ['POST', 'OPTIONS'],
   optionsSuccessStatus: 200,
