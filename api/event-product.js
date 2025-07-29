@@ -7,7 +7,15 @@ import cors from 'cors';
 import { getEventPriceLevel } from '../lib/crm.js'; // Using ESM import
 
 // Initialize CORS middleware with multiple origins
-const corsHandler = cors();
+const corsHandler = cors({
+  origin: [
+    'https://k108---esc-european-speed-5d15a0ed8a9d2.webflow.io', // New testing domain
+    'https://k108---esc-european-speed-club.webflow.io',
+    'https://www.european-speed-club.com',
+    'https://european-speed-club.com'
+  ],
+  optionsSuccessStatus: 200
+});
 
 // Helper to run middleware in a native serverless function
 const runMiddleware = (req, res, fn) => {
