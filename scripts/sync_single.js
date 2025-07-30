@@ -1,17 +1,14 @@
 /**
- * sync_single.js – v2.9 (18 Jul 2025)
+ * sync_single.js – v2.10 (30 Jul 2025)
  * One-way, single-item sync from Dynamics CRM → Webflow CMS
- * - FIXED: Correctly unpublishes items using the `DELETE .../items/:id/live` endpoint, which also sets the item to draft.
- * - MODIFIED: Unpublished events are now set to a draft state instead of being archived.
- * - FIXED: The root cause of the sync failure. The script now handles the fact that the CRM
- * returns a list of ALL published events, by filtering this list for the specific event ID
- * being synced.
- * - ADDED: More specific logging to show the total events returned and the result of the filtering step.
+ * - PATCHED: Added a targeted locking mechanism using Vercel KV to prevent duplicate
+ * event creation during race conditions. The lock is only applied when creating a new item.
  */
 
 require('dotenv').config();
 const { getEvents } = require('../lib/crm');
-const axios =require('axios');
+const axios = require('axios');
+const { kv } = require('@vercel/kv'); // ⬅️ IMPORT VERCEL KV
 
 // --- Helper Functions ------------------------------------------------------
 const webflowApiBase = 'https://api.webflow.com/v2';
@@ -160,17 +157,15 @@ async function syncSingleEvent(eventId, changeType = 'Update') {
     const crmEvents = allPublishedEvents.filter(event => event.m8_eventid === eventId);
     console.log(`    ↳ Found ${crmEvents.length} matching event(s) for ID ${eventId}.`);
 
-    // If the filtered array is empty, the specific event is not published. Unpublish it and set to draft.
     if (!crmEvents.length) {
       console.log(`    → Decision: Event ID ${eventId} was not found in the list of published events. Unpublishing...`);
       if (eventCache.has(eventId)) {
         const webflowId = eventCache.get(eventId);
         console.log(`    → Found Webflow item ${webflowId}. Unpublishing via DELETE .../live endpoint...`);
 
-        // This endpoint unpublishes the item AND sets it to draft.
         const endpoint = `/collections/${COLLECTION_IDS.EVENTS}/items/${webflowId}/live`;
         
-        await callWebflowApi('DELETE', endpoint); // No payload needed for this DELETE request.
+        await callWebflowApi('DELETE', endpoint);
 
         console.log('    ✓ Item successfully unpublished and moved to drafts.');
       } else {
@@ -179,7 +174,6 @@ async function syncSingleEvent(eventId, changeType = 'Update') {
       return;
     }
 
-    // If we reach here, the event was found in the published list and should be created/updated.
     const ev = crmEvents[0];
     console.log(`    ✓ Found CRM Event: "${ev.m8_name}"`);
     console.log(`    → Decision: Event data found in CRM. It will be created/updated and published in Webflow.`);
@@ -194,7 +188,6 @@ async function syncSingleEvent(eventId, changeType = 'Update') {
 
     const fieldData = { name: ev.m8_name, slug: slugify(ev.m8_name), eventid: ev.m8_eventid, startdate: ev.m8_startdate, enddate: ev.m8_enddate, startingamount: ev.m8_startingamount, drivingdays: ev.m8_drivingdays, eventbookingstatuscode: ev.m8_eventbookingstatuscode, isflightincluded: ev.m8_isflightincluded, iseventpublished: ev.m8_iseventpublished, isaccommodationandcateringincluded: ev.m8_isaccommodationandcateringincluded, isfullybooked: ev.m8_isfullybooked, isfullybookedboleantext: ev.m8_isfullybooked ? 'true' : 'false', availablevehicles: ev.m8_availablevehicles, categorie: categoryIds.filter(Boolean), airport: airportIds.filter(Boolean), location: locationId ? [locationId] : [], };
 
-    // Create or update the item in Webflow and ensure it is published.
     if (eventCache.has(ev.m8_eventid)) {
       const webflowId = eventCache.get(ev.m8_eventid);
       console.log(`    → Updating and publishing item ${webflowId}...`);
@@ -206,10 +199,28 @@ async function syncSingleEvent(eventId, changeType = 'Update') {
       await publishItem(COLLECTION_IDS.EVENTS, webflowId);
       console.log('    ✓ Updated & published successfully.');
     } else {
-      console.log('    → Event not found in Webflow. Creating new item...');
-      const { id: newId } = await callWebflowApi('POST', `/collections/${COLLECTION_IDS.EVENTS}/items`, { isArchived: false, isDraft: false, fieldData });
-      await publishItem(COLLECTION_IDS.EVENTS, newId);
-      console.log('    ✓ Created & published successfully.');
+      // ⬇️ MODIFIED BLOCK: LOCKING ADDED HERE
+      console.log('    → Event not found in Webflow. Attempting to acquire lock before creating...');
+      const lockKey = `lock:create-event:${eventId}`;
+      // Try to acquire lock, expires in 60s, fails if key already exists ('nx')
+      const lockAcquired = await kv.set(lockKey, 'locked', { ex: 60, nx: true });
+
+      if (!lockAcquired) {
+        console.log(`    🟡 Lock for creating ${eventId} is already held. Skipping this run to prevent duplicate.`);
+        return;
+      }
+
+      try {
+        console.log(`    → Lock acquired. Creating new item...`);
+        const { id: newId } = await callWebfowApi('POST', `/collections/${COLLECTION_IDS.EVENTS}/items`, { isArchived: false, isDraft: false, fieldData });
+        await publishItem(COLLECTION_IDS.EVENTS, newId);
+        console.log('    ✓ Created & published successfully.');
+      } finally {
+        // Always release the lock after the creation attempt
+        await kv.del(lockKey);
+        console.log(`    → Lock for ${eventId} released.`);
+      }
+      // ⬆️ END OF MODIFIED BLOCK
     }
 
   } catch (error) {
