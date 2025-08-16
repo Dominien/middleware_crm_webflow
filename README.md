@@ -4,7 +4,9 @@
 
 ## 1. Project Overview
 
-This middleware connects a Microsoft Dynamics 365 CRM with a Webflow frontend. It facilitates highly efficient, real-time data synchronization via targeted webhooks and provides robust API endpoints for the frontend to interact with the CRM. The architecture is built around a targeted, single-item synchronization model, making it fast and reliable, and is designed for serverless deployment on Vercel.
+This middleware connects a Microsoft Dynamics 365 CRM with a Webflow frontend. It facilitates highly efficient, real-time data synchronization via targeted webhooks and provides robust API endpoints for the frontend to interact with the CRM. The entire application is designed for serverless deployment on Vercel.
+
+This middleware is the backend for the exclusive event booking platform at [european-speed-club.com](https://www.european-speed-club.com).
 
 ## 2. Core Features
 
