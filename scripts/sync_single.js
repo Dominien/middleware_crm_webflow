@@ -1,14 +1,12 @@
 /**
  * sync_single.js – v2.10 (30 Jul 2025)
  * One-way, single-item sync from Dynamics CRM → Webflow CMS
- * - PATCHED: Added a targeted locking mechanism using Vercel KV to prevent duplicate
- * event creation during race conditions. The lock is only applied when creating a new item.
+ * - MODIFIED: Removed Vercel KV locking mechanism for test environment.
  */
 
 require('dotenv').config();
 const { getEvents } = require('../lib/crm');
 const axios = require('axios');
-const { kv } = require('@vercel/kv'); // ⬅️ IMPORT VERCEL KV
 
 // --- Helper Functions ------------------------------------------------------
 const webflowApiBase = 'https://api.webflow.com/v2';
@@ -199,28 +197,10 @@ async function syncSingleEvent(eventId, changeType = 'Update') {
       await publishItem(COLLECTION_IDS.EVENTS, webflowId);
       console.log('    ✓ Updated & published successfully.');
     } else {
-      // ⬇️ MODIFIED BLOCK: LOCKING ADDED HERE
-      console.log('    → Event not found in Webflow. Attempting to acquire lock before creating...');
-      const lockKey = `lock:create-event:${eventId}`;
-      // Try to acquire lock, expires in 60s, fails if key already exists ('nx')
-      const lockAcquired = await kv.set(lockKey, 'locked', { ex: 60, nx: true });
-
-      if (!lockAcquired) {
-        console.log(`    🟡 Lock for creating ${eventId} is already held. Skipping this run to prevent duplicate.`);
-        return;
-      }
-
-      try {
-        console.log(`    → Lock acquired. Creating new item...`);
-        const { id: newId } = await callWebfowApi('POST', `/collections/${COLLECTION_IDS.EVENTS}/items`, { isArchived: false, isDraft: false, fieldData });
-        await publishItem(COLLECTION_IDS.EVENTS, newId);
-        console.log('    ✓ Created & published successfully.');
-      } finally {
-        // Always release the lock after the creation attempt
-        await kv.del(lockKey);
-        console.log(`    → Lock for ${eventId} released.`);
-      }
-      // ⬆️ END OF MODIFIED BLOCK
+      console.log('    → Event not found in Webflow. Creating new item...');
+      const { id: newId } = await callWebflowApi('POST', `/collections/${COLLECTION_IDS.EVENTS}/items`, { isArchived: false, isDraft: false, fieldData });
+      await publishItem(COLLECTION_IDS.EVENTS, newId);
+      console.log('    ✓ Created & published successfully.');
     }
 
   } catch (error) {
