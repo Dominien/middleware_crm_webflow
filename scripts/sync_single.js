@@ -1,7 +1,9 @@
 /**
- * sync_single.js – v2.10 (30 Jul 2025)
+ * sync_single.js – v2.13 (27 Aug 2025)
  * One-way, single-item sync from Dynamics CRM → Webflow CMS
- * - MODIFIED: Removed Vercel KV locking mechanism for test environment.
+ * - FIXED: Updated description field slug to 'description-3' to match new schema.
+ * - ADDED: Sync for the new 'm8_description' field.
+ * - ADDED: Sync for the 'eventbookingpercentage' field.
  */
 
 require('dotenv').config();
@@ -15,7 +17,6 @@ async function callWebflowApi(method, endpoint, body = null) {
   const WEBFLOW_API_TOKEN = process.env.WEBFLOW_API_TOKEN;
   const fullUrl = `${webflowApiBase}${endpoint}`;
   const timeout = 45000;
-
   const options = {
     method,
     url: fullUrl,
@@ -26,14 +27,9 @@ async function callWebflowApi(method, endpoint, body = null) {
     },
     timeout,
   };
-
-  if (body) {
-    options.data = body;
-  }
-
+  if (body) options.data = body;
   const maxRetries = 5;
   let attempt = 0;
-
   while (attempt < maxRetries) {
     try {
       await new Promise(resolve => setTimeout(resolve, 1100));
@@ -106,33 +102,26 @@ async function syncSingleEvent(eventId, changeType = 'Update') {
     console.error('❌ Sync aborted: No Event ID was provided.');
     return;
   }
-
   try {
     console.log(`🔄 Single Event Sync started for ID: ${eventId} (Type: ${changeType})`);
-
     const COLLECTION_IDS = {
         EVENTS: process.env.WEBFLOW_COLLECTION_ID_EVENTS,
         LOCATIONS: process.env.WEBFLOW_COLLECTION_ID_LOCATIONS,
         CATEGORIES: process.env.WEBFLOW_COLLECTION_ID_CATEGORIES,
         AIRPORTS: process.env.WEBFLOW_COLLECTION_ID_AIRPORTS,
     };
-
     if (changeType === 'Delete') {
       console.log(`    [1/1] Processing DELETE request for event ${eventId}`);
       const webflowEvents = await fetchAllWebflowItemsPaginated(COLLECTION_IDS.EVENTS);
       const eventCache = new Map(webflowEvents.map(i => [i.fieldData.eventid, i.id]));
-
       if (eventCache.has(eventId)) {
         const webflowId = eventCache.get(eventId);
         console.log(`    → Found matching item in Webflow (ID: ${webflowId}). Deleting...`);
         await deleteWebflowItem(COLLECTION_IDS.EVENTS, webflowId);
         console.log('    ✓ Item successfully deleted from Webflow.');
-      } else {
-        console.warn(`    ⚠️ Could not find item in Webflow with CRM ID ${eventId} to delete. No action taken.`);
-      }
+      } else console.warn(`    ⚠️ Could not find item in Webflow with CRM ID ${eventId} to delete. No action taken.`);
       return;
     }
-
     console.log('[1/3] Fetching Webflow reference collections...');
     const [webflowLocations, webflowCategories, webflowAirports] = await Promise.all([
         fetchAllWebflowItemsPaginated(COLLECTION_IDS.LOCATIONS),
@@ -140,60 +129,63 @@ async function syncSingleEvent(eventId, changeType = 'Update') {
         fetchAllWebflowItemsPaginated(COLLECTION_IDS.AIRPORTS)
     ]);
     console.log('    ✓ Caches for reference collections are ready.');
-
     console.log('[2/3] Fetching Webflow event collection...');
     const webflowEvents = await fetchAllWebflowItemsPaginated(COLLECTION_IDS.EVENTS);
     const eventCache = new Map(webflowEvents.map(i => [i.fieldData.eventid, i.id]));
     console.log('    ✓ Webflow event cache is ready.');
-
     console.log(`[3/3] Fetching event ${eventId} from CRM and processing...`);
     const crmEventsRes = await getEvents({ entityids: [eventId] });
-    
     const allPublishedEvents = crmEventsRes?.value ?? [];
     console.log(`    ↳ CRM returned a list of ${allPublishedEvents.length} total published event(s).`);
-
     const crmEvents = allPublishedEvents.filter(event => event.m8_eventid === eventId);
     console.log(`    ↳ Found ${crmEvents.length} matching event(s) for ID ${eventId}.`);
-
     if (!crmEvents.length) {
       console.log(`    → Decision: Event ID ${eventId} was not found in the list of published events. Unpublishing...`);
       if (eventCache.has(eventId)) {
         const webflowId = eventCache.get(eventId);
         console.log(`    → Found Webflow item ${webflowId}. Unpublishing via DELETE .../live endpoint...`);
-
         const endpoint = `/collections/${COLLECTION_IDS.EVENTS}/items/${webflowId}/live`;
-        
         await callWebflowApi('DELETE', endpoint);
-
         console.log('    ✓ Item successfully unpublished and moved to drafts.');
-      } else {
-        console.warn(`    ⚠️ Event is unpublished, but no matching item found in Webflow to unpublish for ID ${eventId}. No action taken.`);
-      }
+      } else console.warn(`    ⚠️ Event is unpublished, but no matching item found in Webflow to unpublish for ID ${eventId}. No action taken.`);
       return;
     }
-
     const ev = crmEvents[0];
     console.log(`    ✓ Found CRM Event: "${ev.m8_name}"`);
     console.log(`    → Decision: Event data found in CRM. It will be created/updated and published in Webflow.`);
-    
     const locationCache = new Map(webflowLocations.map(i => [i.fieldData.eventlocationid, i.id]));
     const categoryCache = new Map(webflowCategories.map(i => [i.fieldData['category-id'], i.id]));
     const airportCache = new Map(webflowAirports.map(i => [i.fieldData.airportid, i.id]));
-
     const locationId = ev.m8_eventlocation ? await upsertReferenceItem({ cache: locationCache, collectionId: COLLECTION_IDS.LOCATIONS, crmIdFieldSlug: 'eventlocationid', crmId: ev.m8_eventlocation.m8_eventlocationid, name: ev.m8_eventlocation.m8_name, additionalFields: { address1city: ev.m8_eventlocation.m8_address1city, address1country: ev.m8_eventlocation.m8_address1country } }) : null;
     const categoryIds = await Promise.all((ev.m8_eventcategories || []).map(cat => upsertReferenceItem({ cache: categoryCache, collectionId: COLLECTION_IDS.CATEGORIES, crmIdFieldSlug: 'category-id', crmId: cat.m8_eventcategoryid, name: cat.m8_name })));
     const airportIds = await Promise.all((ev.m8_airports || []).map(air => upsertReferenceItem({ cache: airportCache, collectionId: COLLECTION_IDS.AIRPORTS, crmIdFieldSlug: 'airportid', crmId: air.m8_airportid, name: air.m8_name, additionalFields: { iataairport: air.m8_iataairport, iataairportcode: air.m8_iataairportcode, note: air.m8_note, address1city: air.m8_address1city, address1country: air.m8_address1country } })));
-
-    const fieldData = { name: ev.m8_name, slug: slugify(ev.m8_name), eventid: ev.m8_eventid, startdate: ev.m8_startdate, enddate: ev.m8_enddate, startingamount: ev.m8_startingamount, drivingdays: ev.m8_drivingdays, eventbookingstatuscode: ev.m8_eventbookingstatuscode, isflightincluded: ev.m8_isflightincluded, iseventpublished: ev.m8_iseventpublished, isaccommodationandcateringincluded: ev.m8_isaccommodationandcateringincluded, isfullybooked: ev.m8_isfullybooked, isfullybookedboleantext: ev.m8_isfullybooked ? 'true' : 'false', availablevehicles: ev.m8_availablevehicles, categorie: categoryIds.filter(Boolean), airport: airportIds.filter(Boolean), location: locationId ? [locationId] : [], };
+    
+    const fieldData = {
+        name: ev.m8_name,
+        slug: slugify(ev.m8_name),
+        'description-3': ev.m8_description,
+        eventid: ev.m8_eventid,
+        startdate: ev.m8_startdate,
+        enddate: ev.m8_enddate,
+        startingamount: ev.m8_startingamount,
+        drivingdays: ev.m8_drivingdays,
+        eventbookingstatuscode: ev.m8_eventbookingstatuscode,
+        eventbookingpercentage: ev.m8_eventbookingpercentage, // <-- ADDED THIS LINE
+        isflightincluded: ev.m8_isflightincluded,
+        iseventpublished: ev.m8_iseventpublished,
+        isaccommodationandcateringincluded: ev.m8_isaccommodationandcateringincluded,
+        isfullybooked: ev.m8_isfullybooked,
+        isfullybookedboleantext: ev.m8_isfullybooked ? 'true' : 'false',
+        availablevehicles: ev.m8_availablevehicles,
+        categorie: categoryIds.filter(Boolean),
+        airport: airportIds.filter(Boolean),
+        location: locationId ? [locationId] : [],
+    };
 
     if (eventCache.has(ev.m8_eventid)) {
       const webflowId = eventCache.get(ev.m8_eventid);
       console.log(`    → Updating and publishing item ${webflowId}...`);
-      await callWebflowApi('PATCH', `/collections/${COLLECTION_IDS.EVENTS}/items/${webflowId}`, {
-        isArchived: false,
-        isDraft: false,
-        fieldData
-      });
+      await callWebflowApi('PATCH', `/collections/${COLLECTION_IDS.EVENTS}/items/${webflowId}`, { isArchived: false, isDraft: false, fieldData });
       await publishItem(COLLECTION_IDS.EVENTS, webflowId);
       console.log('    ✓ Updated & published successfully.');
     } else {
@@ -202,7 +194,6 @@ async function syncSingleEvent(eventId, changeType = 'Update') {
       await publishItem(COLLECTION_IDS.EVENTS, newId);
       console.log('    ✓ Created & published successfully.');
     }
-
   } catch (error) {
     console.error(`\n❌ A critical error occurred during the sync for event ${eventId} (Type: ${changeType}).`);
     console.error(`❌ Error Message: ${error.message}`);

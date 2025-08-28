@@ -1,6 +1,9 @@
 /**
- * sync_full.js  – v3.2 (30 Jun 2025)
+ * sync_full.js  – v3.5 (27 Aug 2025)
  * One-way, full sync from Dynamics CRM → Webflow CMS
+ * - FIXED: Corrected the field slug for the description to 'description-3'.
+ * - ADDED: Sync for the new 'm8_description' field.
+ * - ADDED: Sync for the 'eventbookingpercentage' field.
  * - FIXED: Now runs reliably as a background task on Vercel Pro.
  * - REMOVED: The initial diagnostic check to google.com is no longer needed.
  * - NOTE: This script is triggered by api/crm-webhook.js, which uses `waitUntil`.
@@ -275,12 +278,14 @@ async function syncFull() {
       const fieldData = {
         name: ev.m8_name,
         slug: slugify(ev.m8_name),
+        'description-3': ev.m8_description,
         eventid: ev.m8_eventid,
         startdate: ev.m8_startdate,
         enddate: ev.m8_enddate,
         startingamount: ev.m8_startingamount,
         drivingdays: ev.m8_drivingdays,
         eventbookingstatuscode: ev.m8_eventbookingstatuscode,
+        eventbookingpercentage: ev.m8_eventbookingpercentage, // <-- ADDED THIS LINE
         isflightincluded: ev.m8_isflightincluded,
         iseventpublished: ev.m8_iseventpublished,
         isaccommodationandcateringincluded: ev.m8_isaccommodationandcateringincluded,
@@ -303,6 +308,11 @@ async function syncFull() {
         console.log('   ✓ created & published');
       }
     }
+    
+    // NOTE: This full sync script does not handle unpublishing.
+    // That logic is managed by the single sync script, which is triggered
+    // by specific 'unpublish' or 'delete' events from the CRM.
+
     console.log('\n✅  Full sync complete.');
 
   } catch (error) {
