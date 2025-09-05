@@ -57,108 +57,112 @@ document.addEventListener('DOMContentLoaded', function() {
         });
     }
 
-    // --- DYNAMIC CARD POPULATION ---
-    function populateCardDetails() {
-        const dataMap = new Map();
-        const hiddenDataItems = document.querySelectorAll('.hide-event-info_here .event-data-item');
+    // --- DYNAMIC CARD POPULATION (Corrected Logic) ---
+function populateCardDetails() {
+    const dataMap = new Map();
+    const hiddenDataItems = document.querySelectorAll('.hide-event-info_here .event-data-item');
 
-        hiddenDataItems.forEach(item => {
-            const eventId = item.querySelector('#eventid')?.textContent.trim();
-            if (!eventId) return;
+    // 1. Read all hidden data and store it
+    hiddenDataItems.forEach(item => {
+        const eventId = item.querySelector('#eventid')?.textContent.trim();
+        if (!eventId) return;
 
-            const acronyms = Array.from(item.querySelectorAll('.airport-all-kuerzel'))
-                                  .map(el => el.textContent.trim())
-                                  .filter(Boolean);
-            
-            const bookingPercentageRaw = item.querySelector('#eventbookingpercentage')?.textContent.trim();
-            
-            dataMap.set(eventId, {
-                location: item.querySelector('.location')?.textContent.trim(),
-                airports: acronyms,
-                bookingPercentage: !isNaN(parseInt(bookingPercentageRaw, 10)) ? parseInt(bookingPercentageRaw, 10) : null,
-                isFullyBooked: item.querySelector('.isfullybooked')?.textContent.trim().toLowerCase() === 'true',
-                eventName: item.querySelector('.name-event')?.textContent.trim(),
-                startDate: item.querySelector('.start-date')?.textContent.trim(),
-                endDate: item.querySelector('.end-date')?.textContent.trim(),
-            });
+        const acronyms = Array.from(item.querySelectorAll('.airport-all-kuerzel'))
+                              .map(el => el.textContent.trim())
+                              .filter(Boolean);
+        
+        const bookingPercentageRaw = item.querySelector('#eventbookingpercentage')?.textContent.trim();
+        
+        dataMap.set(eventId, {
+            location: item.querySelector('.location')?.textContent.trim(),
+            airports: acronyms,
+            bookingPercentage: !isNaN(parseInt(bookingPercentageRaw, 10)) ? parseInt(bookingPercentageRaw, 10) : null,
+            isFullyBooked: item.querySelector('.isfullybooked')?.textContent.trim().toLowerCase() === 'true',
+            eventName: item.querySelector('.name-event')?.textContent.trim(),
+            startDate: item.querySelector('.start-date')?.textContent.trim(),
+            endDate: item.querySelector('.end-date')?.textContent.trim(),
         });
+    });
 
-        const visibleEventItems = document.querySelectorAll('.w-dyn-list .w-dyn-item');
-        visibleEventItems.forEach(card => {
-            const cardId = card.querySelector('.hide-id')?.textContent.trim();
-            if (!cardId) return;
+    // 2. Loop through visible cards and update them
+    const visibleEventItems = document.querySelectorAll('.w-dyn-list .w-dyn-item');
+    visibleEventItems.forEach(card => {
+        const cardId = card.querySelector('.hide-id')?.textContent.trim();
+        if (!cardId) return;
 
-            const data = dataMap.get(cardId);
-            if (!data) return;
+        const data = dataMap.get(cardId);
+        if (!data) return;
 
-            // Update Airport Info
-            const airportIcon = card.querySelector('img[src*="_Vector.svg"]');
-            if (airportIcon) {
-                const targetDiv = airportIcon.nextElementSibling;
-                if (targetDiv) {
-                    if (data.airports && data.airports.length > 0) {
-                        targetDiv.textContent = 'ab ' + data.airports.join(', ');
-                    } else {
-                        targetDiv.textContent = 'Eigene Anreise';
-                    }
+        // --- Update Airport Info (No changes here) ---
+        const airportIcon = card.querySelector('img[src*="_Vector.svg"]');
+        if (airportIcon) {
+            const targetDiv = airportIcon.nextElementSibling;
+            if (targetDiv) {
+                if (data.airports && data.airports.length > 0) {
+                    targetDiv.textContent = 'ab ' + data.airports.join(', ');
+                } else {
+                    targetDiv.textContent = 'Eigene Anreise';
                 }
             }
+        }
 
-            // Update Flag Info
-            const flagElement = card.querySelector('.emoji-flag');
-            if (flagElement && data.location) {
-                if (data.location.toLowerCase() === 'lappland') {
-                    flagElement.textContent = '🇸🇪';
-                } else if (data.location.toLowerCase() === 'katschberg') {
-                    flagElement.textContent = '🇦🇹';
-                }
+        // --- Update Flag Info (No changes here) ---
+        const flagElement = card.querySelector('.emoji-flag');
+        if (flagElement && data.location) {
+            if (data.location.toLowerCase() === 'lappland') {
+                flagElement.textContent = '🇸🇪';
+            } else if (data.location.toLowerCase() === 'katschberg') {
+                flagElement.textContent = '🇦🇹';
             }
+        }
 
-            // Update Booking Status Info
-            const statusContainer = card.querySelector('.topinfo-under');
-            const bookingButton = card.querySelector('a.button.is-icon');
-            const percentage = data.bookingPercentage;
+        // --- CORRECTED: Update Booking Status Info ---
+        const statusContainer = card.querySelector('.topinfo-under');
+        const bookingButton = card.querySelector('a.button.is-icon');
+        const percentage = data.bookingPercentage;
 
-            if (statusContainer && statusContainer.parentElement) {
-                statusContainer.parentElement.style.display = 'none'; // Hide by default
-                const statusTextEl = statusContainer.querySelector('div:not(.info-pin)');
+        if (statusContainer) {
+            // Hide ONLY the status text container by default
+            statusContainer.style.display = 'none'; 
+            const statusTextEl = statusContainer.querySelector('div:not(.info-pin)');
 
-                if (percentage !== null && statusTextEl) {
-                    let statusText = '';
-                    let showStatus = false;
+            if (percentage !== null && statusTextEl) {
+                let statusText = '';
+                let showStatus = false;
 
-                    if (percentage >= 75 && percentage < 85) {
-                        statusText = 'nur noch wenige Plätze frei';
-                        showStatus = true;
-                    } else if (percentage >= 85 && percentage < 100) {
-                        statusText = `Fast ausverkauft (${percentage}%)`;
-                        showStatus = true;
-                    } else if (percentage === 100 || data.isFullyBooked) {
-                        statusText = 'ausverkauft, auf die Warteliste';
-                        showStatus = true;
-                        
-                        if (bookingButton) {
-                            const buttonText = bookingButton.querySelector('div');
-                            if (buttonText) buttonText.textContent = 'Zur Warteliste';
-                            
-                            const waitlistUrl = new URL('/warteliste-event', window.location.origin);
-                            waitlistUrl.searchParams.set('event_id', cardId);
-                            waitlistUrl.searchParams.set('event_name', data.eventName);
-                            waitlistUrl.searchParams.set('event_location', data.location);
-                            waitlistUrl.searchParams.set('event_start_date', data.startDate);
-                            waitlistUrl.searchParams.set('event_end_date', data.endDate);
-                            bookingButton.href = waitlistUrl.toString();
-                        }
-                    }
+                if (percentage >= 75 && percentage < 85) {
+                    statusText = 'nur noch wenige Plätze frei';
+                    showStatus = true;
+                } else if (percentage >= 85 && percentage < 100) {
+                    statusText = `Fast ausverkauft (${percentage}%)`;
+                    showStatus = true;
+                } else if (percentage === 100 || data.isFullyBooked) {
+                    statusText = 'ausverkauft, auf die Warteliste';
+                    showStatus = true;
                     
-                    if (showStatus) {
-                        statusTextEl.textContent = statusText;
-                        statusContainer.parentElement.style.display = 'block';
+                    if (bookingButton) {
+                        const buttonText = bookingButton.querySelector('div');
+                        if (buttonText) buttonText.textContent = 'Zur Warteliste';
+                        
+                        const waitlistUrl = new URL('/warteliste-event', window.location.origin);
+                        waitlistUrl.searchParams.set('event_id', cardId);
+                        waitlistUrl.searchParams.set('event_name', data.eventName);
+                        waitlistUrl.searchParams.set('event_location', data.location);
+                        waitlistUrl.searchParams.set('event_start_date', data.startDate);
+                        waitlistUrl.searchParams.set('event_end_date', data.endDate);
+                        bookingButton.href = waitlistUrl.toString();
                     }
                 }
+                
+                // If a status should be shown, update the text and display the container.
+                if (showStatus) {
+                    statusTextEl.textContent = statusText;
+                    statusContainer.style.display = 'flex'; // Use flex to show it
+                }
             }
-        });
-    }
+        }
+    });
+}
 
     // --- HELPER FUNCTIONS ---
     function findVisibleEventCard(eventName) {
