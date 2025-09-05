@@ -71,7 +71,7 @@ document.addEventListener('DOMContentLoaded', function() {
             drivingDays: drivingDays,
             cost: cost,
             models: modelEl ? modelEl.textContent.trim() : null,
-            fullyBooked: fullyBookedEl && fullyBookedEl.textContent.trim().toLowerCase() === 'true',
+            fullyBooked: (bookingPercentage === 100) || (fullyBookedEl && fullyBookedEl.textContent.trim().toLowerCase() === 'true'),
             bookingPercentage: bookingPercentage
           };
           events.push(parsedEvent);
@@ -236,40 +236,40 @@ document.addEventListener('DOMContentLoaded', function() {
           if (bookedPercentage === 100) {
             labelText = 'ausverkauft, auf die Warteliste';
             htmlContent = `
-							<div style="width: 100%; font-family: sans-serif;">
-								<div style="height: 8px; background-color: #F3F4F6; border-radius: 4px; overflow: hidden; margin-bottom: 8px;">
-									<div style="width: ${bookedPercentage}%; height: 100%; background-color: #3B82F6; transition: width 0.5s ease;"></div>
-								</div>
-								<div style="display: flex; justify-content: space-between; align-items: flex-start; text-align: left;">
-									<div>
-										<div style="font-size: 14px; font-weight: 700; color: #1F2937; line-height: 1.2;">${bookedPercentage}%</div>
-										<div style="font-size: 11px; color: #6B7280; text-transform: uppercase; letter-spacing: 0.5px;">${labelText}</div>
-									</div>
-								</div>
-							</div>
-						`;
+                            <div style="width: 100%; font-family: sans-serif;">
+                                <div style="height: 8px; background-color: #F3F4F6; border-radius: 4px; overflow: hidden; margin-bottom: 8px;">
+                                    <div style="width: ${bookedPercentage}%; height: 100%; background-color: #3B82F6; transition: width 0.5s ease;"></div>
+                                </div>
+                                <div style="display: flex; justify-content: space-between; align-items: flex-start; text-align: left;">
+                                    <div>
+                                        <div style="font-size: 14px; font-weight: 700; color: #1F2937; line-height: 1.2;">${bookedPercentage}%</div>
+                                        <div style="font-size: 11px; color: #6B7280; text-transform: uppercase; letter-spacing: 0.5px;">${labelText}</div>
+                                    </div>
+                                </div>
+                            </div>
+                        `;
           } else if (bookedPercentage >= 85) {
             labelText = 'Fast ausverkauft';
             htmlContent = `
-							<div style="width: 100%; font-family: sans-serif;">
-								<div style="height: 8px; background-color: #F3F4F6; border-radius: 4px; overflow: hidden; margin-bottom: 8px;">
-									<div style="width: ${bookedPercentage}%; height: 100%; background-color: #3B82F6; transition: width 0.5s ease;"></div>
-								</div>
-								<div style="display: flex; justify-content: space-between; align-items: flex-start; text-align: left;">
-									<div>
-										<div style="font-size: 14px; font-weight: 700; color: #1F2937; line-height: 1.2;">${bookedPercentage}%</div>
-										<div style="font-size: 11px; color: #6B7280; text-transform: uppercase; letter-spacing: 0.5px;">${labelText}</div>
-									</div>
-								</div>
-							</div>
-						`;
+                            <div style="width: 100%; font-family: sans-serif;">
+                                <div style="height: 8px; background-color: #F3F4F6; border-radius: 4px; overflow: hidden; margin-bottom: 8px;">
+                                    <div style="width: ${bookedPercentage}%; height: 100%; background-color: #3B82F6; transition: width 0.5s ease;"></div>
+                                </div>
+                                <div style="display: flex; justify-content: space-between; align-items: flex-start; text-align: left;">
+                                    <div>
+                                        <div style="font-size: 14px; font-weight: 700; color: #1F2937; line-height: 1.2;">${bookedPercentage}%</div>
+                                        <div style="font-size: 11px; color: #6B7280; text-transform: uppercase; letter-spacing: 0.5px;">${labelText}</div>
+                                    </div>
+                                </div>
+                            </div>
+                        `;
           } else { // This covers 75% to 84%
             labelText = 'nur noch wenige Plätze frei';
             htmlContent = `
-							<div style="width: 100%; font-family: sans-serif; text-align: left;">
-								<div style="font-size: 12px; font-weight: 600; color: #1F2937;">${labelText}</div>
-							</div>
-						`;
+                            <div style="width: 100%; font-family: sans-serif; text-align: left;">
+                                <div style="font-size: 12px; font-weight: 600; color: #1F2937;">${labelText}</div>
+                            </div>
+                        `;
           }
 
           percentBlock.innerHTML = htmlContent;
